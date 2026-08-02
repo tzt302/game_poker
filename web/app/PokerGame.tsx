@@ -1,16 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { aiDecision, Card, freshDeck, handName, handScore, PERSONALITIES, Player, Style } from "./poker";
+import { aiDecision, Card, freshDeck, handName, handScore, Player } from "./poker";
 
 const NAMES = ["你", "沈砚", "阿岚", "老周", "白露"];
-const STYLES: Array<"human" | Style> = ["human", "tight", "aggressive", "balanced", "loose"];
 const SEATS = ["south", "west", "northwest", "northeast", "east"];
 const PHASES = ["翻牌前", "翻牌", "转牌", "河牌"];
 type LogEntry = { id: number; street: string; player: string; action: string; amount?: number; result?: boolean };
 
 function initialPlayers(): Player[] {
-  return NAMES.map((name, id) => ({ id, name, stack: 1000, cards: [], folded: false, allIn: false, bet: 0, lastAction: "等待", style: STYLES[id] }));
+  return NAMES.map((name, id) => ({ id, name, stack: 1000, cards: [], folded: false, allIn: false, bet: 0, lastAction: "等待" }));
 }
 
 function CardView({ card, hidden = false, delay = 0, small = false }: { card?: Card; hidden?: boolean; delay?: number; small?: boolean }) {
@@ -45,6 +44,7 @@ export default function PokerGame() {
   const potRef = useRef(pot);
   const betRef = useRef(currentBet);
   const actedRef = useRef<Set<number>>(new Set());
+  const aiRaiseCountRef = useRef(0);
   const runAiRef = useRef<() => void>(() => undefined);
   useEffect(() => { playersRef.current = players; }, [players]);
   useEffect(() => { potRef.current = pot; }, [pot]);
@@ -109,13 +109,16 @@ export default function PokerGame() {
     playersRef.current = resetPlayers;
     setPlayers(resetPlayers);
     actedRef.current = new Set();
+    aiRaiseCountRef.current = 0;
     setCurrentBet(0); betRef.current = 0;
     if (phase === 0) setBoard(deckRef.current.splice(0, 3));
     else if (phase < 3) setBoard((old) => [...old, deckRef.current.shift()!]);
     else { setReveal(true); setTimeout(settle, 700); return; }
     setPhase((v) => v + 1);
-    setMessage(`${PHASES[phase + 1]} · 轮到你行动`);
-    setBusy(false);
+    const humanCanAct = !resetPlayers[0].folded && !resetPlayers[0].allIn;
+    setMessage(humanCanAct ? `${PHASES[phase + 1]} · 轮到你行动` : `${PHASES[phase + 1]} · AI 继续对局`);
+    setBusy(!humanCanAct);
+    if (!humanCanAct) setTimeout(() => runAiRef.current(), 320);
   }, [award, phase, settle]);
 
   const runAi = useCallback(async () => {
@@ -127,13 +130,14 @@ export default function PokerGame() {
       setThinking(id); setMessage(`${p.name}正在研判牌局…`);
       await new Promise((r) => setTimeout(r, 750 + Math.random() * 650));
       const call = Math.max(0, betRef.current - p.bet);
-      const d = aiDecision(p.style as Style, p.cards, board, call, potRef.current, p.stack);
+      const d = aiDecision(p.cards, board, call, potRef.current, p.stack, aiRaiseCountRef.current === 0);
       if (d.type === "fold") {
         foldPlayer(id);
         addLog({ street: PHASES[phase], player: p.name, action: "弃牌" });
       } else if (d.type === "raise") {
         const paid = pay(id, d.amount, `加注至 ${p.bet + d.amount}`);
         const newBet = p.bet + paid; setCurrentBet(newBet); betRef.current = newBet;
+        aiRaiseCountRef.current += 1;
         actedRef.current = new Set([id]);
         addLog({ street: PHASES[phase], player: p.name, action: "加注至", amount: newBet });
       } else {
@@ -166,7 +170,7 @@ export default function PokerGame() {
     const reset = players.map((p) => ({ ...p, stack: p.stack || 1000, cards: [deck.shift()!, deck.shift()!], folded: false, allIn: false, bet: 0, lastAction: "已入局" }));
     setPlayers(reset); playersRef.current = reset;
     setBoard([]); setPot(0); potRef.current = 0; setCurrentBet(0); betRef.current = 0; setPhase(0);
-    setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null); setWinnerIds([]); setResultReason(""); actedRef.current = new Set();
+    setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null); setWinnerIds([]); setResultReason(""); actedRef.current = new Set(); aiRaiseCountRef.current = 0;
     const sb = (nextDealer + 1) % 5, bb = (nextDealer + 2) % 5;
     setLog([
       { id: Date.now(), street: "翻牌前", player: reset[bb].name, action: "大盲", amount: 20 },
@@ -209,6 +213,7 @@ export default function PokerGame() {
   return (
     <main className="game-shell">
       <header className="topbar">
+        <a className="lobby-link" href="/" aria-label="返回游戏大厅">← <span>游戏大厅</span></a>
         <div className="brand"><div><h1>德州扑克</h1></div></div>
         <div className="table-meta"><span>第 {Math.max(1, handNo)} 局</span><i /><span>盲注 10 / 20</span><i /><span>随机牌组</span></div>
         <button className="sound-button" aria-label="声音">♪</button>
@@ -240,7 +245,7 @@ export default function PokerGame() {
                 {showdownHands.has(p.id) && <div className={`hand-badge ${winnerIds.includes(p.id) ? "best" : ""}`}>{winnerIds.includes(p.id) ? "胜出 · " : ""}{showdownHands.get(p.id)}</div>}
                 <div className="player-plaque">
                   <div className="avatar">{p.name.slice(0,1)}{dealer === p.id && <em>D</em>}</div>
-                  <div className="player-copy"><div><strong>{p.name}</strong>{p.style !== "human" && <span style={{ color: PERSONALITIES[p.style].color }}>{PERSONALITIES[p.style].label}</span>}</div><b>{p.stack.toLocaleString()} <small>筹码</small></b></div>
+                  <div className="player-copy"><div><strong>{p.name}</strong></div><b>{p.stack.toLocaleString()} <small>筹码</small></b></div>
                 </div>
                 <div className={`action-bubble ${thinking === p.id ? "active" : ""}`}>{thinking === p.id ? <><span className="dots">•••</span> 思考中</> : p.lastAction}</div>
               </div>
@@ -252,8 +257,8 @@ export default function PokerGame() {
         <aside className="side-panel">
           <div className="panel-heading"><div><h2>对局信息</h2><p>对手行动与当前局势</p></div></div>
           <div className="odds-card"><div><span>当前牌力参考</span><strong>{winRate}%</strong></div><div className="meter"><i style={{ width: `${winRate}%` }} /></div><small>根据已知牌面估算，仅供牌桌决策参考</small></div>
-          <div className="personality-list">
-            {players.slice(1).map((p) => <div className={`personality ${thinking === p.id ? "active" : ""}`} key={p.id}><span className="mini-avatar">{p.name[0]}</span><div><strong>{p.name}<em style={{ color: PERSONALITIES[p.style as Style].color }}>{PERSONALITIES[p.style as Style].label}</em></strong><small>{PERSONALITIES[p.style as Style].motto}</small></div><b>{p.lastAction}</b></div>)}
+          <div className="personality-list opponent-list">
+            {players.slice(1).map((p) => <div className={`personality ${thinking === p.id ? "active" : ""}`} key={p.id}><span className="mini-avatar">{p.name[0]}</span><div><strong>{p.name}</strong><small>{p.folded ? "本局已弃牌" : `${p.stack.toLocaleString()} 筹码`}</small></div><b>{p.lastAction}</b></div>)}
           </div>
           {reveal && showdownHands.size > 0 && <div className="showdown-panel"><h3>开牌结果</h3>{players.filter((p) => showdownHands.has(p.id)).sort((a, b) => Number(winnerIds.includes(b.id)) - Number(winnerIds.includes(a.id))).map((p) => <div className={winnerIds.includes(p.id) ? "best" : ""} key={p.id}><strong>{p.name}</strong><span>{p.cards.map((c) => `${c.rank}${c.suit}`).join(" ")}</span><b>{showdownHands.get(p.id)}</b></div>)}</div>}
           <div className="action-log"><div className="log-heading"><h3>下注历史</h3><span>最新在上</span></div><div className="log-columns"><span>阶段</span><span>玩家</span><span>动作</span><span>筹码</span></div><div className="log-rows">{log.map((entry) => <div className={`log-row ${entry.result ? "result" : ""}`} key={entry.id}><span>{entry.street}</span><strong>{entry.player}</strong><b>{entry.action}</b><em>{entry.amount === undefined ? "—" : entry.amount}</em></div>)}</div></div>
@@ -261,7 +266,7 @@ export default function PokerGame() {
       </section>
 
       <footer className="action-dock">
-        {handOver ? <button className="deal-button" onClick={startHand}><span>开始新一局</span><small>重新洗牌并随机发牌</small></button> : <>
+        {handOver ? <button className="deal-button" onClick={startHand}><span>开始新一局</span><small>重新洗牌并随机发牌</small></button> : human.folded ? <div className="spectating-notice"><strong>你已弃牌</strong><span>AI 正在完成本局</span></div> : <>
           <button className="action ghost" disabled={busy} onClick={() => humanAction("fold")}><span>弃牌</span><small>Fold</small></button>
           <button className="action pale" disabled={busy} onClick={() => humanAction("call")}><span>{toCall ? `跟注 ${toCall}` : "过牌"}</span><small>{toCall ? "Call" : "Check"}</small></button>
           <div className="raise-control"><div className="raise-head"><span>加注筹码</span><strong>{shownRaise}</strong></div><input aria-label="加注筹码" type="range" min={minRaise} max={Math.max(minRaise, maxRaise)} step="10" value={shownRaise} disabled={busy || human.stack <= toCall} onChange={(e) => setRaise(Number(e.target.value))} /><div className="raise-ticks"><span>{minRaise}</span><span>半池</span><span>全下 {human.stack}</span></div></div>
