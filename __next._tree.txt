@@ -1,0 +1,2 @@
+:HL["/game_poker/_next/static/chunks/073i4qclyu1l4.css","style"]
+0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}},"staleTime":300,"buildId":"A78ozNVJik4AK0bgJ-UQi"}
