@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from neon_holdem.engine import Card, HoldemGame, evaluate_seven
+from neon_holdem.engine import Card, HoldemGame, STYLE_PROFILES, evaluate_seven
 
 
 def cards(text: str):
@@ -58,6 +58,34 @@ class GameFlowTests(unittest.TestCase):
             guard += 1
         self.assertTrue(game.hand_over)
         self.assertEqual(len(game.community), 5)
+
+    def test_preflop_premium_scores_above_junk(self):
+        game = HoldemGame(seed=2)
+        premium = game._preflop_strength(cards("As Ah"))
+        junk = game._preflop_strength(cards("7c 2d"))
+        self.assertGreater(premium, 0.9)
+        self.assertLess(junk, 0.5)
+        self.assertGreater(premium, junk)
+
+    def test_personalities_are_distinct_and_do_not_overfold(self):
+        game = HoldemGame(seed=19)
+        counts = {style: {"fold": 0, "raise": 0, "total": 0} for style in STYLE_PROFILES}
+        for _ in range(240):
+            game.start_hand()
+            for idx in range(1, 5):
+                style = game.players[idx].style
+                action, _amount = game.bot_action(idx)
+                counts[style]["total"] += 1
+                if action == "fold":
+                    counts[style]["fold"] += 1
+                if action in ("raise", "allin"):
+                    counts[style]["raise"] += 1
+        total_folds = sum(item["fold"] for item in counts.values())
+        total_actions = sum(item["total"] for item in counts.values())
+        self.assertLess(total_folds / total_actions, 0.25)
+        self.assertLessEqual(counts["loose"]["fold"], counts["tight"]["fold"])
+        self.assertGreater(counts["aggressive"]["raise"], counts["tight"]["raise"])
+        self.assertEqual(len({profile["label"] for profile in STYLE_PROFILES.values()}), 4)
 
 
 if __name__ == "__main__":

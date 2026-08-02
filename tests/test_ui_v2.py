@@ -54,6 +54,24 @@ class AnimationFlowTests(unittest.TestCase):
         self.app._draw()
         self.assertEqual(self.app.canvas.get_size(), (1280, 760))
 
+    def test_bot_thinking_delay_is_visible(self):
+        self.finish_animations()
+        self.assertNotEqual(self.app.game.actor, 0)
+        self.assertGreater(self.app.bot_due - time.monotonic(), 0.7)
+
+    def test_raise_presets_cover_precise_and_all_in_values(self):
+        self.finish_animations()
+        self.app.game.actor = 0
+        self.app.observed_actor = 0
+        self.app._reset_raise_default()
+        legal = self.app.game.legal_actions(0)
+        self.app._set_raise_preset("half")
+        half_pot = self.app.raise_to
+        self.app._set_raise_preset("allin")
+        self.assertGreaterEqual(half_pot, int(legal["min_raise_to"]))
+        self.assertLessEqual(half_pot, int(legal["max_raise_to"]))
+        self.assertEqual(self.app.raise_to, int(legal["max_raise_to"]))
+
     def test_animated_state_machine_reaches_hand_end(self):
         self.finish_animations()
         guard = 0
