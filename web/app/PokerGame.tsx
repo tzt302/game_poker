@@ -44,6 +44,8 @@ export default function PokerGame() {
   const playersRef = useRef(players);
   const potRef = useRef(pot);
   const betRef = useRef(currentBet);
+  const actedRef = useRef<Set<number>>(new Set());
+  const runAiRef = useRef<() => void>(() => undefined);
   useEffect(() => { playersRef.current = players; }, [players]);
   useEffect(() => { potRef.current = pot; }, [pot]);
   useEffect(() => { betRef.current = currentBet; }, [currentBet]);
@@ -59,14 +61,22 @@ export default function PokerGame() {
   }, []);
 
   const pay = useCallback((id: number, amount: number, action: string) => {
-    let paid = 0;
-    setPlayers((old) => old.map((p) => {
-      if (p.id !== id) return p;
-      paid = Math.min(p.stack, amount);
-      return { ...p, stack: p.stack - paid, bet: p.bet + paid, allIn: p.stack === paid, lastAction: action };
-    }));
-    setPot((v) => v + paid);
+    const current = playersRef.current.find((p) => p.id === id);
+    if (!current) return 0;
+    const paid = Math.min(current.stack, Math.max(0, amount));
+    const next = playersRef.current.map((p) => p.id === id ? { ...p, stack: p.stack - paid, bet: p.bet + paid, allIn: p.stack === paid, lastAction: action } : p);
+    playersRef.current = next;
+    setPlayers(next);
+    potRef.current += paid;
+    setPot(potRef.current);
     return paid;
+  }, []);
+
+  const foldPlayer = useCallback((id: number) => {
+    const next = playersRef.current.map((p) => p.id === id ? { ...p, folded: true, lastAction: "弃牌" } : p);
+    playersRef.current = next;
+    setPlayers(next);
+    actedRef.current.add(id);
   }, []);
 
   const award = useCallback((winners: Player[], reason: string) => {
@@ -95,7 +105,10 @@ export default function PokerGame() {
   const nextStreet = useCallback(() => {
     const live = playersRef.current.filter((p) => !p.folded);
     if (live.length === 1) { award(live, "其余玩家均已弃牌"); return; }
-    setPlayers((old) => old.map((p) => ({ ...p, bet: 0, lastAction: p.folded ? "已弃牌" : "等待" })));
+    const resetPlayers = playersRef.current.map((p) => ({ ...p, bet: 0, lastAction: p.folded ? "已弃牌" : "等待" }));
+    playersRef.current = resetPlayers;
+    setPlayers(resetPlayers);
+    actedRef.current = new Set();
     setCurrentBet(0); betRef.current = 0;
     if (phase === 0) setBoard(deckRef.current.splice(0, 3));
     else if (phase < 3) setBoard((old) => [...old, deckRef.current.shift()!]);
@@ -110,19 +123,22 @@ export default function PokerGame() {
     for (const id of [1, 2, 3, 4]) {
       const p = playersRef.current[id];
       if (!p || p.folded || p.allIn || p.stack <= 0) continue;
+      if (actedRef.current.has(id) && p.bet >= betRef.current) continue;
       setThinking(id); setMessage(`${p.name}正在研判牌局…`);
       await new Promise((r) => setTimeout(r, 750 + Math.random() * 650));
       const call = Math.max(0, betRef.current - p.bet);
       const d = aiDecision(p.style as Style, p.cards, board, call, potRef.current, p.stack);
       if (d.type === "fold") {
-        setPlayers((old) => old.map((x) => x.id === id ? { ...x, folded: true, lastAction: "弃牌" } : x));
+        foldPlayer(id);
         addLog({ street: PHASES[phase], player: p.name, action: "弃牌" });
       } else if (d.type === "raise") {
         const paid = pay(id, d.amount, `加注至 ${p.bet + d.amount}`);
         const newBet = p.bet + paid; setCurrentBet(newBet); betRef.current = newBet;
+        actedRef.current = new Set([id]);
         addLog({ street: PHASES[phase], player: p.name, action: "加注至", amount: newBet });
       } else {
         pay(id, d.amount, d.type === "call" ? `跟注 ${d.amount}` : "过牌");
+        actedRef.current.add(id);
         addLog({ street: PHASES[phase], player: p.name, action: d.type === "call" ? "跟注" : "过牌", amount: d.type === "call" ? d.amount : undefined });
       }
       await new Promise((r) => setTimeout(r, 280));
@@ -130,8 +146,19 @@ export default function PokerGame() {
     }
     setThinking(null);
     const live = playersRef.current.filter((p) => !p.folded);
-    if (live.length === 1) award(live, "其余玩家均已弃牌"); else nextStreet();
-  }, [addLog, award, board, nextStreet, pay, phase]);
+    if (live.length === 1) { award(live, "其余玩家均已弃牌"); return; }
+    const currentHuman = playersRef.current[0];
+    const humanMustRespond = !currentHuman.folded && !currentHuman.allIn && (!actedRef.current.has(0) || currentHuman.bet < betRef.current);
+    if (humanMustRespond) {
+      setBusy(false);
+      setMessage(currentHuman.bet < betRef.current ? `有人加注至 ${betRef.current} · 请跟注、再加注或弃牌` : `${PHASES[phase]} · 轮到你行动`);
+      return;
+    }
+    const unsettledAi = playersRef.current.slice(1).some((p) => !p.folded && !p.allIn && (!actedRef.current.has(p.id) || p.bet < betRef.current));
+    if (unsettledAi) { setTimeout(() => runAiRef.current(), 250); return; }
+    nextStreet();
+  }, [addLog, award, board, foldPlayer, nextStreet, pay, phase]);
+  useEffect(() => { runAiRef.current = () => { void runAi(); }; }, [runAi]);
 
   function startHand() {
     const deck = freshDeck(); deckRef.current = deck;
@@ -139,7 +166,7 @@ export default function PokerGame() {
     const reset = players.map((p) => ({ ...p, stack: p.stack || 1000, cards: [deck.shift()!, deck.shift()!], folded: false, allIn: false, bet: 0, lastAction: "已入局" }));
     setPlayers(reset); playersRef.current = reset;
     setBoard([]); setPot(0); potRef.current = 0; setCurrentBet(0); betRef.current = 0; setPhase(0);
-    setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null); setWinnerIds([]); setResultReason("");
+    setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null); setWinnerIds([]); setResultReason(""); actedRef.current = new Set();
     const sb = (nextDealer + 1) % 5, bb = (nextDealer + 2) % 5;
     setLog([
       { id: Date.now(), street: "翻牌前", player: reset[bb].name, action: "大盲", amount: 20 },
@@ -152,15 +179,16 @@ export default function PokerGame() {
   function humanAction(type: "fold" | "call" | "raise") {
     if (busy || handOver) return;
     if (type === "fold") {
-      setPlayers((old) => old.map((p) => p.id === 0 ? { ...p, folded: true, lastAction: "弃牌" } : p));
+      foldPlayer(0);
       addLog({ street: PHASES[phase], player: "你", action: "弃牌" }); setTimeout(runAi, 300); return;
     }
     if (type === "call") {
       pay(0, toCall, toCall ? `跟注 ${toCall}` : "过牌"); addLog({ street: PHASES[phase], player: "你", action: toCall ? "跟注" : "过牌", amount: toCall || undefined });
+      actedRef.current.add(0);
     } else {
       const amount = Math.min(human.stack, shownRaise);
       pay(0, amount, `加注至 ${human.bet + amount}`); const newBet = human.bet + amount;
-      setCurrentBet(newBet); betRef.current = newBet; addLog({ street: PHASES[phase], player: "你", action: "加注至", amount: newBet });
+      setCurrentBet(newBet); betRef.current = newBet; actedRef.current = new Set([0]); addLog({ street: PHASES[phase], player: "你", action: "加注至", amount: newBet });
     }
     setTimeout(runAi, 350);
   }
