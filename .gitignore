@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.release_env/
+build/
+dist/
+release/
+*.spec.bak
+.pytest_cache/
+*.log
