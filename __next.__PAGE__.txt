@@ -1,6 +1,6 @@
 1:"$Sreact.fragment"
-2:I[82723,["/game_poker/_next/static/chunks/0os4r2b_q-rny.js","/game_poker/_next/static/chunks/1569p~j8r.ojp.js"],"default"]
+2:I[82723,["/game_poker/_next/static/chunks/0os4r2b_q-rny.js","/game_poker/_next/static/chunks/11vw~~6cel8v_.js"],"default"]
 3:I[84080,["/game_poker/_next/static/chunks/0os4r2b_q-rny.js"],"OutletBoundary"]
 4:"$Sreact.suspense"
-0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{}],[["$","script","script-0",{"src":"/game_poker/_next/static/chunks/1569p~j8r.ojp.js","async":true}]],["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"GJ1f8Pe36T7zB3dVNxRZ2"}
+0:{"rsc":["$","$1","c",{"children":[["$","$L2",null,{}],[["$","script","script-0",{"src":"/game_poker/_next/static/chunks/11vw~~6cel8v_.js","async":true}]],["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"dGicep2pJtOzyOKd5zb1o"}
 5:null
