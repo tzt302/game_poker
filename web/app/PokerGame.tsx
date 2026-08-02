@@ -17,7 +17,7 @@ function CardView({ card, hidden = false, delay = 0, small = false }: { card?: C
   return (
     <div className={`playing-card ${hidden ? "card-back" : ""} ${red ? "red" : "black"} ${small ? "small" : ""}`} style={{ animationDelay: `${delay}ms` }}>
       {!hidden && card && <><span className="rank">{card.rank}</span><span className="suit">{card.suit}</span><span className="center-suit">{card.suit}</span></>}
-      {hidden && <div className="back-mark">金</div>}
+      {hidden && <div className="back-mark">♠</div>}
     </div>
   );
 }
@@ -163,7 +163,7 @@ export default function PokerGame() {
   return (
     <main className="game-shell">
       <header className="topbar">
-        <div className="brand"><span className="seal">金</span><div><h1>金陵牌局</h1><p>德州扑克 · 人机雅局</p></div></div>
+        <div className="brand"><div><h1>德州扑克</h1></div></div>
         <div className="table-meta"><span>第 {Math.max(1, handNo)} 局</span><i /><span>盲注 10 / 20</span><i /><span>随机牌组</span></div>
         <button className="sound-button" aria-label="声音">♪</button>
       </header>
@@ -173,7 +173,7 @@ export default function PokerGame() {
           <div className="ambient-light" />
           <div className="poker-table">
             <div className="table-inlay" />
-            <div className="deck-stack"><span>金</span></div>
+            <div className="deck-stack"><span>♠</span></div>
             <div className="pot-display"><small>底池</small><strong>{pot}</strong><div className="chip-row"><b /><b /><b /><b /></div></div>
             <div className="community-cards">
               {[0,1,2,3,4].map((i) => board[i] ? <CardView key={`${board[i].rank}${board[i].suit}`} card={board[i]} delay={i * 120} small /> : <div className="card-slot" key={i} />)}
@@ -198,7 +198,7 @@ export default function PokerGame() {
         </div>
 
         <aside className="side-panel">
-          <div className="panel-heading"><span>牌</span><div><h2>牌局研判</h2><p>对手行动与局势一目了然</p></div></div>
+          <div className="panel-heading"><div><h2>对局信息</h2><p>对手行动与当前局势</p></div></div>
           <div className="odds-card"><div><span>当前牌力参考</span><strong>{winRate}%</strong></div><div className="meter"><i style={{ width: `${winRate}%` }} /></div><small>根据已知牌面估算，仅供牌桌决策参考</small></div>
           <div className="personality-list">
             {players.slice(1).map((p) => <div className={`personality ${thinking === p.id ? "active" : ""}`} key={p.id}><span className="mini-avatar">{p.name[0]}</span><div><strong>{p.name}<em style={{ color: PERSONALITIES[p.style as Style].color }}>{PERSONALITIES[p.style as Style].label}</em></strong><small>{PERSONALITIES[p.style as Style].motto}</small></div><b>{p.lastAction}</b></div>)}
