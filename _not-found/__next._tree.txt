@@ -1,2 +1,2 @@
-:HL["/game_poker/_next/static/chunks/073i4qclyu1l4.css","style"]
-0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"/_not-found","param":null,"prefetchHints":0,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}}}},"staleTime":300,"buildId":"A78ozNVJik4AK0bgJ-UQi"}
+:HL["/game_poker/_next/static/chunks/10np16nfz413~.css","style"]
+0:{"tree":{"name":"","param":null,"prefetchHints":16,"slots":{"children":{"name":"/_not-found","param":null,"prefetchHints":0,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":0,"slots":null}}}}},"staleTime":300,"buildId":"KEU2DHK1fXP_VVU-EZ2kE"}
