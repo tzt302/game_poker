@@ -4,11 +4,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL("https://tzt302.github.io/game_poker/"),
   title: "德州扑克",
-  description: "随机发牌，与四种性格的 AI 对战。",
+  description: "随机发牌，与四名 AI 对战。",
   icons: { icon: "/favicon.svg" },
   openGraph: {
     title: "德州扑克",
-    description: "随机发牌，与四种性格的 AI 来一局。",
+    description: "随机发牌，与四名 AI 来一局。",
   },
 };
 
