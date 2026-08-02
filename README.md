@@ -51,4 +51,8 @@ python -m pip install pygame pyinstaller
 pyinstaller --noconfirm --clean NeonHoldem.spec
 ```
 
-构建结果位于 `dist/NeonHoldem/`。
+构建结果位于 `dist/NeonHoldem/`。发布前可运行以下成品自检：
+
+```powershell
+dist\NeonHoldem\NeonHoldem.exe --smoke-test
+```
