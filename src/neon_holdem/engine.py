@@ -13,6 +13,29 @@ RANKS = "23456789TJQKA"
 SUITS = "shdc"
 RANK_VALUE = {rank: value for value, rank in enumerate(RANKS, start=2)}
 
+STYLE_PROFILES = {
+    "tight": {
+        "label": "谨慎猎手", "tagline": "精选起手牌 · 小心追注",
+        "fold_floor": 0.28, "raise_line": 0.73, "bluff": 0.02,
+        "call_bonus": 0.00, "bet_low": 0.38, "bet_high": 0.62,
+    },
+    "aggressive": {
+        "label": "强势施压", "tagline": "频繁加注 · 偶尔诈唬",
+        "fold_floor": 0.16, "raise_line": 0.49, "bluff": 0.16,
+        "call_bonus": 0.08, "bet_low": 0.68, "bet_high": 1.08,
+    },
+    "balanced": {
+        "label": "冷静计算", "tagline": "重视赔率 · 尺寸多变",
+        "fold_floor": 0.22, "raise_line": 0.61, "bluff": 0.06,
+        "call_bonus": 0.04, "bet_low": 0.48, "bet_high": 0.78,
+    },
+    "loose": {
+        "label": "松凶玩家", "tagline": "爱看翻牌 · 敢追听牌",
+        "fold_floor": 0.12, "raise_line": 0.63, "bluff": 0.10,
+        "call_bonus": 0.14, "bet_low": 0.52, "bet_high": 0.86,
+    },
+}
+
 
 @dataclass(frozen=True)
 class Card:
@@ -141,6 +164,7 @@ class HoldemGame:
         self.winners: list[int] = []
         self.hand_over = True
         self.last_pot = 0
+        self.last_decision_note: dict[int, str] = {}
         self.start_hand()
 
     @property
@@ -176,6 +200,7 @@ class HoldemGame:
         self.winners = []
         self.hand_over = False
         self.last_pot = 0
+        self.last_decision_note.clear()
         for player in self.players:
             player.cards = [self.deck.pop(), self.deck.pop()]
             player.street_bet = 0
@@ -351,30 +376,68 @@ class HoldemGame:
         self.hand_over = True
 
     def bot_action(self, idx: int) -> tuple[str, int]:
-        """Choose an action using hand strength, pot odds and table personality."""
+        """Choose a visibly personality-driven action without over-folding preflop."""
         player = self.players[idx]
         legal = self.legal_actions(idx)
         to_call = int(legal["to_call"])
-        strength = self._estimate_strength(idx, 90)
-        style = {
-            "tight": (-0.08, 0.02),
-            "aggressive": (0.03, 0.15),
-            "loose": (0.08, 0.05),
-            "balanced": (0.0, 0.08),
-        }[player.style]
-        call_bias, raise_bias = style
-        noise = self.rng.uniform(-0.08, 0.08)
+        profile = STYLE_PROFILES[player.style]
+        preflop = self.stage == Stage.PREFLOP
+        strength = self._preflop_strength(player.cards) if preflop else self._estimate_strength(idx, 110)
+        noise = self.rng.uniform(-0.055, 0.055)
         pot_odds = to_call / max(1, self.pot + to_call)
-        if to_call and strength + call_bias + noise < pot_odds + 0.08:
+
+        # Cheap preflop calls are intentionally sticky. A large raise still creates
+        # real fold equity, while an unopened pot no longer loses half the table.
+        if preflop:
+            extra_blinds = max(0.0, to_call / self.big_blind - 1.0)
+            fold_line = float(profile["fold_floor"]) + min(0.34, extra_blinds * 0.075)
+        else:
+            fold_line = max(0.055, pot_odds * 0.62 - float(profile["call_bonus"]))
+        if to_call and strength + noise < fold_line:
+            self.last_decision_note[idx] = "牌力不足，面对压力选择止损"
             return "fold", 0
-        if bool(legal["can_raise"]) and strength + raise_bias + noise > 0.68:
+
+        bluffing = self.rng.random() < float(profile["bluff"]) and to_call <= max(self.big_blind, self.pot // 3)
+        raise_line = float(profile["raise_line"]) + (0.04 if preflop else 0.0)
+        if bool(legal["can_raise"]) and (strength + noise > raise_line or bluffing):
             low = int(legal["min_raise_to"])
             high = int(legal["max_raise_to"])
-            target = min(high, max(low, self.current_bet + int(self.pot * (0.35 + strength * 0.45))))
-            if target >= high and strength > 0.82:
+            fraction = self.rng.uniform(float(profile["bet_low"]), float(profile["bet_high"]))
+            target = min(high, max(low, self.current_bet + int(self.pot * fraction)))
+            target = max(low, (target // self.small_blind) * self.small_blind)
+            if target >= high and strength > 0.86:
+                self.last_decision_note[idx] = "拿到顶级牌力，直接推入全部筹码"
                 return "allin", high
+            self.last_decision_note[idx] = "主动施压" if bluffing else "牌力领先，扩大底池"
             return "raise", target
-        return ("check", 0) if bool(legal["can_check"]) else ("call", 0)
+
+        if bool(legal["can_check"]):
+            self.last_decision_note[idx] = "控制底池，免费看下一张牌"
+            return "check", 0
+        self.last_decision_note[idx] = "赔率合适，继续看牌"
+        return "call", 0
+
+    def _preflop_strength(self, cards: list[Card]) -> float:
+        """Human-readable 0..1 starting-hand score used by preflop bots."""
+        first, second = cards
+        high, low = sorted((first.value, second.value), reverse=True)
+        if high == low:
+            return min(1.0, 0.50 + high / 28.0)
+        score = (high + low) / 34.0
+        if first.suit == second.suit:
+            score += 0.075
+        gap = high - low
+        if gap == 1:
+            score += 0.075
+        elif gap == 2:
+            score += 0.035
+        elif gap >= 5:
+            score -= 0.09
+        if high == 14:
+            score += 0.08
+        if low >= 10:
+            score += 0.06
+        return max(0.0, min(1.0, score))
 
     def _estimate_strength(self, idx: int, samples: int) -> float:
         hero = self.players[idx].cards

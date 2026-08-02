@@ -9,7 +9,7 @@ import time
 
 import pygame
 
-from .engine import Card, HoldemGame, Stage, evaluate_seven
+from .engine import Card, HoldemGame, STYLE_PROFILES, Stage, evaluate_seven
 
 
 W, H = 1280, 760
@@ -49,6 +49,7 @@ class LogEntry:
     action: str
     accent: tuple[int, int, int]
     hand: int
+    detail: str = ""
 
 
 class Button:
@@ -64,10 +65,13 @@ class Button:
         fill = self.accent if hover else tuple(max(0, c - 28) for c in self.accent)
         if not self.enabled:
             fill = (37, 48, 53)
-        pygame.draw.rect(surface, (1, 6, 9), self.rect.move(0, 5), border_radius=13)
+        pygame.draw.rect(surface, (0, 4, 7), self.rect.move(0, 7), border_radius=13)
+        pygame.draw.rect(surface, tuple(max(0, c - 65) for c in fill), self.rect.move(0, 4), border_radius=13)
         pygame.draw.rect(surface, fill, self.rect, border_radius=13)
-        pygame.draw.line(surface, (255, 255, 255), (self.rect.x + 14, self.rect.y + 2),
-                         (self.rect.right - 14, self.rect.y + 2), 1)
+        pygame.draw.line(surface, (255, 245, 194), (self.rect.x + 13, self.rect.y + 2),
+                         (self.rect.right - 13, self.rect.y + 2), 2)
+        pygame.draw.line(surface, tuple(max(0, c - 80) for c in fill),
+                         (self.rect.x + 10, self.rect.bottom - 2), (self.rect.right - 10, self.rect.bottom - 2), 2)
         color = (5, 19, 22) if self.enabled else (102, 116, 119)
         label = font.render(self.label, True, color)
         surface.blit(label, label.get_rect(center=self.rect.center))
@@ -85,10 +89,18 @@ class PokerApp:
         self.seat_accents = [(247, 194, 67), (61, 197, 239), (242, 99, 112),
                              (177, 112, 247), (64, 214, 159)]
         self.buttons = [
-            Button(pygame.Rect(210, 690, 122, 48), "弃牌", "fold", (231, 81, 92)),
-            Button(pygame.Rect(344, 690, 132, 48), "过牌", "check", (72, 142, 181)),
-            Button(pygame.Rect(488, 690, 144, 48), "跟注", "call", (48, 204, 152)),
-            Button(pygame.Rect(644, 690, 150, 48), "加注", "raise", (240, 183, 63)),
+            Button(pygame.Rect(24, 697, 108, 43), "弃牌", "fold", (231, 81, 92)),
+            Button(pygame.Rect(143, 697, 114, 43), "过牌", "check", (72, 142, 181)),
+            Button(pygame.Rect(268, 697, 128, 43), "跟注", "call", (48, 204, 152)),
+            Button(pygame.Rect(407, 697, 130, 43), "加注", "raise", (240, 183, 63)),
+        ]
+        self.preset_buttons = [
+            (pygame.Rect(558, 656, 67, 29), "最小", "min"),
+            (pygame.Rect(632, 656, 67, 29), "半池", "half"),
+            (pygame.Rect(706, 656, 67, 29), "3/4池", "three_quarter"),
+            (pygame.Rect(780, 656, 67, 29), "满池", "pot"),
+            (pygame.Rect(854, 656, 67, 29), "全下", "allin"),
+            (pygame.Rect(928, 656, 62, 29), "+10", "plus"),
         ]
         self.raise_to = 60
         self.show_help = False
@@ -99,6 +111,8 @@ class PokerApp:
         self.logs: list[LogEntry] = []
         self.particles: list[dict] = []
         self.bot_due = float("inf")
+        self.thinking_started = time.monotonic()
+        self.observed_actor = self.game.actor
         self.hand_over_at = 0.0
         self.last_stage = self.game.stage
         self.stage_banner = ""
@@ -107,7 +121,9 @@ class PokerApp:
 
     def _load_fonts(self):
         candidates = ["Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial"]
+        display_candidates = ["Bahnschrift SemiBold", "Bahnschrift", "Arial Black"]
         name = next((font for font in candidates if pygame.font.match_font(font)), None)
+        display = next((font for font in display_candidates if pygame.font.match_font(font)), name)
         return {
             "tiny": pygame.font.SysFont(name, 12),
             "xs": pygame.font.SysFont(name, 14),
@@ -115,6 +131,8 @@ class PokerApp:
             "md": pygame.font.SysFont(name, 19, bold=True),
             "lg": pygame.font.SysFont(name, 26, bold=True),
             "xl": pygame.font.SysFont(name, 36, bold=True),
+            "title": pygame.font.SysFont(display, 28, bold=True),
+            "number": pygame.font.SysFont(display, 21, bold=True),
             "suit": pygame.font.SysFont("Segoe UI Symbol", 36),
         }
 
@@ -162,8 +180,14 @@ class PokerApp:
                         self._perform_action(0, "check" if legal["can_check"] else "call")
                     elif event.key in (pygame.K_r, pygame.K_RETURN):
                         self._perform_action(0, "raise", self.raise_to)
+                    elif event.key in (pygame.K_LEFT, pygame.K_DOWN):
+                        self._adjust_raise(-10)
+                    elif event.key in (pygame.K_RIGHT, pygame.K_UP):
+                        self._adjust_raise(10)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self._click(self._mouse_canvas())
+            elif event.type == pygame.MOUSEWHEEL and self.can_human_act:
+                self._adjust_raise(event.y * 10)
 
     def _click(self, pos):
         if self.show_help:
@@ -178,16 +202,75 @@ class PokerApp:
         if self.game.hand_over and pygame.Rect(405, 687, 230, 52).collidepoint(pos):
             self._new_hand()
             return
-        slider = pygame.Rect(812, 705, 176, 10)
+        for rect, _label, preset in self.preset_buttons:
+            if self.can_human_act and rect.collidepoint(pos):
+                self._set_raise_preset(preset)
+                return
+        slider = pygame.Rect(565, 716, 420, 12)
         if self.can_human_act and slider.inflate(0, 28).collidepoint(pos):
             legal = self.game.legal_actions()
             low, high = int(legal["min_raise_to"]), int(legal["max_raise_to"])
             ratio = max(0.0, min(1.0, (pos[0] - slider.x) / slider.width))
-            self.raise_to = max(low, (int(low + (high - low) * ratio) // 10) * 10)
+            # Quadratic response gives most of the track to useful small/medium bets.
+            self.raise_to = self._clamp_raise(int(low + (high - low) * ratio * ratio))
             return
         for button in self.buttons:
             if button.enabled and button.rect.collidepoint(pos):
                 self._perform_action(0, button.action, self.raise_to)
+
+    def _clamp_raise(self, value):
+        legal = self.game.legal_actions()
+        low, high = int(legal["min_raise_to"]), int(legal["max_raise_to"])
+        step = self.game.small_blind
+        rounded = max(low, (int(value) // step) * step)
+        return min(high, rounded)
+
+    def _adjust_raise(self, delta):
+        if self.can_human_act and self.game.legal_actions()["can_raise"]:
+            self.raise_to = self._clamp_raise(self.raise_to + delta)
+
+    def _set_raise_preset(self, preset):
+        self.raise_to = self._clamp_raise(self._preset_target(preset))
+
+    def _preset_target(self, preset):
+        legal = self.game.legal_actions()
+        low, high = int(legal["min_raise_to"]), int(legal["max_raise_to"])
+        pot = max(self.game.big_blind, self.game.pot)
+        targets = {
+            "min": low,
+            "half": self.game.current_bet + int(pot * 0.5),
+            "three_quarter": self.game.current_bet + int(pot * 0.75),
+            "pot": self.game.current_bet + pot,
+            "allin": high,
+            "plus": self.raise_to + self.game.small_blind,
+        }
+        return targets[preset]
+
+    def _reset_raise_default(self):
+        if self.game.human_turn:
+            legal = self.game.legal_actions()
+            if legal["can_raise"]:
+                target = self.game.current_bet + max(self.game.big_blind, int(self.game.pot * 0.65))
+                self.raise_to = self._clamp_raise(target)
+
+    def _schedule_bot_turn(self, now, animation_delay=0.0):
+        actor = self.game.actor
+        self.observed_actor = actor
+        self.thinking_started = now + animation_delay
+        if actor in (None, 0) or self.game.hand_over:
+            self.bot_due = float("inf")
+            if actor == 0:
+                self._reset_raise_default()
+            return
+        style = self.game.players[actor].style
+        ranges = {
+            "tight": (1.85, 2.75),
+            "aggressive": (1.25, 1.95),
+            "balanced": (2.05, 3.05),
+            "loose": (1.45, 2.25),
+        }
+        low, high = ranges[style]
+        self.bot_due = now + animation_delay + self.game.rng.uniform(low, high)
 
     def _new_hand(self):
         self.game.start_hand()
@@ -214,12 +297,12 @@ class PokerApp:
         for number, (idx, slot) in enumerate(order):
             target = self._hole_card_center(idx, slot)
             self.motions.append(Motion(
-                "card", DECK_POS, target, now, 0.46, number * 0.085,
+                "card", DECK_POS, target, now, 0.58, number * 0.11,
                 self.game.players[idx].cards[slot], idx != 0, idx == 0,
                 self._hole_card_size(idx), self._hole_rotation(idx, slot),
                 reveal=("hole", idx, slot),
             ))
-        self.bot_due = now + 1.75
+        self._schedule_bot_turn(now, 1.68)
         self.stage_banner = "发牌"
         self.stage_banner_until = now + 0.9
 
@@ -241,23 +324,29 @@ class PokerApp:
         action_text = player.last_action or action
         accent = self.seat_accents[idx]
         now = time.monotonic()
-        self.bubbles[idx] = (action_text, now + 2.2, accent)
-        self.logs.insert(0, LogEntry(player.name, action_text, accent, self.game.hand_number))
+        self.bubbles[idx] = (action_text, now + 2.8, accent)
+        detail = ""
+        if idx != 0:
+            style_name = STYLE_PROFILES[player.style]["label"]
+            reason = self.game.last_decision_note.get(idx, "按自己的节奏行动")
+            detail = f"{style_name} · {reason}"
+            self.motions.append(Motion("pulse", self.seats[idx], self.seats[idx], now, 0.62))
+        self.logs.insert(0, LogEntry(player.name, action_text, accent, self.game.hand_number, detail))
         self.logs = self.logs[:18]
         delay = 0.0
         if paid > 0:
-            self.motions.append(Motion("chip", self._chip_origin(idx), POT_POS, now, 0.54,
+            self.motions.append(Motion("chip", self._chip_origin(idx), POT_POS, now, 0.72,
                                        amount=paid))
-            delay = 0.34
+            delay = 0.52
         if action == "fold":
             for slot in range(2):
                 self.revealed_hole.discard((idx, slot))
                 self.motions.append(Motion(
-                    "fold", self._hole_card_center(idx, slot), DECK_POS, now, 0.42,
-                    slot * 0.05, player.cards[slot], True, False,
+                    "fold", self._hole_card_center(idx, slot), DECK_POS, now, 0.58,
+                    slot * 0.09, player.cards[slot], True, False,
                     self._hole_card_size(idx), self._hole_rotation(idx, slot),
                 ))
-            delay = 0.35
+            delay = 0.52
         new_cards = len(self.game.community) - before_community
         if self.game.stage != before_stage and new_cards > 0:
             stage_name = self.game.stage.value
@@ -268,21 +357,22 @@ class PokerApp:
                 board_idx = before_community + offset
                 self.motions.append(Motion(
                     "card", DECK_POS, self._community_center(board_idx), now,
-                    0.55, delay + offset * 0.16, self.game.community[board_idx],
-                    True, True, (62, 88), 0, reveal=("community", board_idx, 0),
+                    0.72, delay + offset * 0.23, self.game.community[board_idx],
+                    True, True, (68, 96), 0, reveal=("community", board_idx, 0),
                 ))
-            delay += 0.45 + new_cards * 0.16
+            delay += 0.68 + new_cards * 0.23
         if self.game.hand_over and not before_over:
             self._schedule_payout(now + delay)
-        self.bot_due = now + max(0.72, delay + 0.46)
-        if self.game.human_turn:
-            legal = self.game.legal_actions()
-            self.raise_to = max(int(legal["min_raise_to"]), min(self.raise_to, int(legal["max_raise_to"])))
+        remaining = max(
+            (motion.started + motion.delay + motion.duration - now for motion in self.motions),
+            default=0.0,
+        )
+        self._schedule_bot_turn(now, max(delay, remaining) + 0.18)
 
     def _schedule_payout(self, start_time):
         for order, winner in enumerate(self.game.winners):
             self.motions.append(Motion("payout", POT_POS, self._chip_origin(winner),
-                                       start_time, 0.8, order * 0.12,
+                                       start_time, 1.05, order * 0.18,
                                        amount=max(1, self.game.last_pot // max(1, len(self.game.winners)))))
         self.logs.insert(0, LogEntry("结果", self.game.message, (247, 198, 74), self.game.hand_number))
         self._burst_chips()
@@ -348,7 +438,9 @@ class PokerApp:
         pygame.draw.circle(self.canvas, (35, 220, 164), (38, 35), 22)
         pygame.draw.circle(self.canvas, (4, 14, 18), (38, 35), 14)
         pygame.draw.circle(self.canvas, (246, 192, 61), (38, 35), 7)
-        self.canvas.blit(self.fonts["lg"].render("NEON HOLD'EM", True, (236, 245, 241)), (72, 12))
+        title_shadow = self.fonts["title"].render("NEON HOLD'EM", True, (15, 81, 71))
+        self.canvas.blit(title_shadow, (74, 15))
+        self.canvas.blit(self.fonts["title"].render("NEON HOLD'EM", True, (246, 243, 221)), (72, 12))
         self.canvas.blit(self.fonts["tiny"].render("CINEMATIC TABLE · 5-MAX", True, (88, 124, 127)), (74, 43))
         info = self.fonts["sm"].render(f"牌局 #{self.game.hand_number}   {self.game.stage.value}   盲注 10 / 20", True, (151, 178, 177))
         self.canvas.blit(info, info.get_rect(center=(570, 35)))
@@ -374,6 +466,14 @@ class PokerApp:
         pygame.draw.ellipse(self.canvas, (7, 91, 66), (73, 132, 894, 440))
         pygame.draw.ellipse(self.canvas, (9, 112, 81), (84, 141, 872, 421))
         pygame.draw.ellipse(self.canvas, (41, 212, 154), (91, 148, 858, 405), 2)
+        pygame.draw.ellipse(self.canvas, (250, 194, 71), (55, 116, 930, 476), 2)
+        for step in range(18):
+            angle = math.tau * step / 18
+            stud_x = int(520 + math.cos(angle) * 454)
+            stud_y = int(352 + math.sin(angle) * 222)
+            pygame.draw.circle(self.canvas, (35, 21, 16), (stud_x + 1, stud_y + 2), 4)
+            pygame.draw.circle(self.canvas, (235, 175, 74), (stud_x, stud_y), 3)
+            pygame.draw.circle(self.canvas, (255, 235, 164), (stud_x - 1, stud_y - 1), 1)
         # Perspective seams and central embossed logo.
         clip = pygame.Surface((W, H), pygame.SRCALPHA)
         for x in (155, 270, 390, 650, 770, 885):
@@ -399,9 +499,9 @@ class PokerApp:
         start = 520 - 5 * 34
         for idx in range(5):
             if idx < self.revealed_community:
-                self._blit_card(self.game.community[idx], self._community_center(idx), (62, 88), False, 0)
+                self._blit_card(self.game.community[idx], self._community_center(idx), (68, 96), False, 0)
             else:
-                rect = pygame.Rect(0, 0, 58, 82)
+                rect = pygame.Rect(0, 0, 64, 90)
                 rect.center = self._community_center(idx)
                 slot = pygame.Surface(rect.size, pygame.SRCALPHA)
                 pygame.draw.rect(slot, (3, 55, 45, 95), slot.get_rect(), border_radius=8)
@@ -441,6 +541,10 @@ class PokerApp:
         pygame.draw.rect(self.canvas, (8, 24, 29), panel, border_radius=9)
         pygame.draw.rect(self.canvas, accent if active else (43, 69, 73), panel, 2 if active else 1, border_radius=9)
         self.canvas.blit(self.fonts["sm"].render(player.name, True, (247, 201, 77) if idx == 0 else (228, 238, 233)), (panel.x + 9, panel.y + 3))
+        if idx != 0:
+            persona = STYLE_PROFILES[player.style]["label"]
+            persona_text = self.fonts["tiny"].render(persona, True, accent)
+            self.canvas.blit(persona_text, (panel.right - persona_text.get_width() - 8, panel.y + 5))
         stack = self.fonts["tiny"].render(f"{player.stack:,} 筹码", True, (137, 164, 163))
         self.canvas.blit(stack, (panel.x + 9, panel.y + 23))
         if idx == self.game.dealer:
@@ -458,6 +562,8 @@ class PokerApp:
         bubble = self.bubbles.get(idx)
         if bubble and time.monotonic() < bubble[1]:
             self._draw_action_bubble(idx, bubble[0], bubble[2])
+        elif active and idx != 0:
+            self._draw_thinking_bubble(idx, accent)
         if player.street_bet > 0:
             bx, by = self._chip_origin(idx)
             self._draw_chip_stack((bx, by), min(5, player.street_bet // 20 + 1), accent)
@@ -479,6 +585,18 @@ class PokerApp:
         pygame.draw.rect(self.canvas, accent, rect, 2, border_radius=12)
         self.canvas.blit(label, label.get_rect(center=rect.center))
 
+    def _draw_thinking_bubble(self, idx, accent):
+        x, y = self.seats[idx]
+        center = (x + 104, y - 22) if idx in (1, 2) else (x - 104, y - 22)
+        elapsed = max(0.0, time.monotonic() - self.thinking_started)
+        dots = "." * (1 + int(elapsed * 2.4) % 3)
+        label = self.fonts["sm"].render(f"思考中{dots}", True, (230, 240, 235))
+        rect = label.get_rect(center=center).inflate(24, 13)
+        pygame.draw.rect(self.canvas, (1, 9, 13), rect.move(0, 5), border_radius=12)
+        pygame.draw.rect(self.canvas, (12, 34, 40), rect, border_radius=12)
+        pygame.draw.rect(self.canvas, accent, rect, 2, border_radius=12)
+        self.canvas.blit(label, label.get_rect(center=rect.center))
+
     def _draw_motions(self):
         now = time.monotonic()
         for motion in self.motions:
@@ -488,6 +606,13 @@ class PokerApp:
             eased = 1 - (1 - t) ** 3
             x = motion.start[0] + (motion.end[0] - motion.start[0]) * eased
             y = motion.start[1] + (motion.end[1] - motion.start[1]) * eased
+            if motion.kind == "pulse":
+                radius = int(28 + 58 * eased)
+                alpha = int(170 * (1 - t))
+                ring = pygame.Surface((radius * 2 + 8, radius * 2 + 8), pygame.SRCALPHA)
+                pygame.draw.circle(ring, (255, 215, 105, alpha), (radius + 4, radius + 4), radius, 4)
+                self.canvas.blit(ring, ring.get_rect(center=(int(x), int(y))))
+                continue
             if motion.kind in ("chip", "payout"):
                 y -= math.sin(math.pi * t) * (55 if motion.kind == "chip" else 78)
                 self._draw_chip_stack((int(x), int(y)), 4, (244, 183, 62), alpha=int(255 * min(1, t * 3)))
@@ -518,8 +643,9 @@ class PokerApp:
         self.canvas.blit(stage, stage.get_rect(center=stage_rect.center))
         pygame.draw.line(self.canvas, (27, 49, 54), (1028, 70), (1260, 70))
         y = 88
-        for entry in self.logs[:10]:
-            card = pygame.Rect(1025, y, 238, 54)
+        for entry in self.logs[:8]:
+            height = 66 if entry.detail else 54
+            card = pygame.Rect(1025, y, 238, height)
             pygame.draw.rect(self.canvas, (9, 25, 30), card, border_radius=9)
             pygame.draw.rect(self.canvas, (27, 49, 54), card, 1, border_radius=9)
             pygame.draw.circle(self.canvas, entry.accent, (1041, y + 16), 5)
@@ -527,7 +653,10 @@ class PokerApp:
             action = self.fonts["sm"].render(entry.action, True, (215, 229, 224))
             self.canvas.blit(name, (1052, y + 6))
             self.canvas.blit(action, (1040, y + 27))
-            y += 61
+            if entry.detail:
+                detail = entry.detail if len(entry.detail) <= 20 else entry.detail[:19] + "…"
+                self.canvas.blit(self.fonts["tiny"].render(detail, True, (111, 143, 143)), (1040, y + 48))
+            y += height + 7
         if len(self.logs) < 3:
             hint = self.fonts["xs"].render("每一次下注都会记录在这里", True, (81, 112, 115))
             self.canvas.blit(hint, hint.get_rect(center=(1144, 292)))
@@ -542,7 +671,10 @@ class PokerApp:
         elif actor == 0:
             headline, detail = "轮到你", "请选择弃牌、跟注或加注"
         else:
-            headline, detail = f"{self.game.players[actor].name} 思考中", "AI 正在评估牌力和底池赔率"
+            bot = self.game.players[actor]
+            profile = STYLE_PROFILES[bot.style]
+            headline = f"{bot.name} · {profile['label']}"
+            detail = profile["tagline"]
         self.canvas.blit(self.fonts["sm"].render(headline, True, (61, 220, 168)), (1038, 691))
         self.canvas.blit(self.fonts["tiny"].render(detail, True, (135, 159, 158)), (1038, 716))
 
@@ -570,18 +702,38 @@ class PokerApp:
                 button.label = f"加注 {self.raise_to}"
                 button.enabled = bool(legal and legal["can_raise"])
             button.draw(self.canvas, self.fonts["sm"], self._mouse_canvas())
-        status = "轮到你行动" if self.can_human_act else ("正在播放行动…" if self.animation_locked else "等待对手行动…")
+        status = "轮到你行动 · 滚轮/方向键可微调" if self.can_human_act else ("正在播放行动动画…" if self.animation_locked else "对手正在思考…")
         color = (55, 220, 167) if self.can_human_act else (125, 151, 151)
-        self.canvas.blit(self.fonts["xs"].render(status, True, color), (211, 659))
+        self.canvas.blit(self.fonts["xs"].render(status, True, color), (24, 660))
         if self.can_human_act and legal and legal["can_raise"]:
-            slider = pygame.Rect(812, 705, 176, 10)
-            pygame.draw.rect(self.canvas, (31, 52, 56), slider, border_radius=5)
+            mouse = self._mouse_canvas()
+            for rect, label, preset in self.preset_buttons:
+                target = self._clamp_raise(self._preset_target(preset))
+                selected = abs(self.raise_to - target) < self.game.small_blind
+                hover = rect.collidepoint(mouse)
+                fill = (238, 182, 63) if selected else ((40, 87, 83) if hover else (18, 46, 51))
+                pygame.draw.rect(self.canvas, (0, 6, 8), rect.move(0, 3), border_radius=8)
+                pygame.draw.rect(self.canvas, fill, rect, border_radius=8)
+                pygame.draw.rect(self.canvas, (246, 208, 102) if selected else (53, 91, 92), rect, 1, border_radius=8)
+                text_color = (20, 28, 27) if selected else (196, 216, 211)
+                text = self.fonts["tiny"].render(label, True, text_color)
+                self.canvas.blit(text, text.get_rect(center=rect.center))
+            slider = pygame.Rect(565, 716, 420, 12)
+            pygame.draw.rect(self.canvas, (1, 7, 10), slider.inflate(4, 8), border_radius=8)
+            pygame.draw.rect(self.canvas, (28, 53, 57), slider, border_radius=6)
             low, high = int(legal["min_raise_to"]), int(legal["max_raise_to"])
-            ratio = (self.raise_to - low) / max(1, high - low)
-            pygame.draw.rect(self.canvas, (239, 183, 61), (slider.x, slider.y, int(slider.w * ratio), 10), border_radius=5)
-            pygame.draw.circle(self.canvas, (255, 229, 145), (slider.x + int(slider.w * ratio), slider.centery), 8)
-            tip = self.fonts["tiny"].render(f"加注滑杆  {self.raise_to} / {high}", True, (139, 161, 160))
-            self.canvas.blit(tip, (814, 681))
+            normalized = (self.raise_to - low) / max(1, high - low)
+            ratio = math.sqrt(max(0.0, min(1.0, normalized)))
+            fill_width = int(slider.w * ratio)
+            pygame.draw.rect(self.canvas, (239, 183, 61), (slider.x, slider.y, fill_width, slider.h), border_radius=6)
+            knob_x = slider.x + fill_width
+            pygame.draw.circle(self.canvas, (3, 10, 12), (knob_x, slider.centery + 2), 12)
+            pygame.draw.circle(self.canvas, (255, 224, 121), (knob_x, slider.centery), 10)
+            pygame.draw.circle(self.canvas, (255, 247, 210), (knob_x - 2, slider.centery - 2), 3)
+            amount = self.fonts["number"].render(f"加注到 {self.raise_to}", True, (255, 220, 111))
+            self.canvas.blit(amount, (565, 689))
+            bounds = self.fonts["tiny"].render(f"最小 {low}    最大 {high}", True, (112, 143, 143))
+            self.canvas.blit(bounds, (850, 695))
 
     def _draw_stage_banner(self):
         t = max(0.0, self.stage_banner_until - time.monotonic())
@@ -609,6 +761,7 @@ class PokerApp:
             "发光座位代表当前行动者；行动气泡显示刚才的决定。",
             "右侧牌局动态会保留每次过牌、跟注、加注、全下和弃牌。",
             "飞向中央的筹码代表下注，公共牌会在新阶段逐张翻开。",
+            "加注区可选择最小、半池、3/4 池、满池或全下，滚轮可以微调。",
             "",
             "快捷键：F 弃牌 · C/空格 跟注或过牌 · R/回车 加注 · N 下一手",
         ]
@@ -625,24 +778,45 @@ class PokerApp:
     def _card_surface(self, card, size, back=False):
         w, h = size
         surface = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(surface, (0, 0, 0, 95), (3, 5, w - 3, h - 5), border_radius=8)
-        pygame.draw.rect(surface, (244, 245, 239), (0, 0, w - 4, h - 5), border_radius=8)
-        pygame.draw.rect(surface, (205, 214, 207), (0, 0, w - 4, h - 5), 1, border_radius=8)
+        card_rect = pygame.Rect(1, 1, w - 7, h - 9)
+        pygame.draw.rect(surface, (0, 0, 0, 120), card_rect.move(5, 8), border_radius=9)
+        pygame.draw.rect(surface, (89, 69, 42), card_rect.move(2, 5), border_radius=9)
         if back:
-            pygame.draw.rect(surface, (7, 33, 53), (5, 5, w - 14, h - 15), border_radius=5)
-            pygame.draw.rect(surface, (43, 216, 163), (9, 9, w - 22, h - 23), 2, border_radius=4)
-            for yy in range(14, h - 13, 9):
-                for xx in range(14, w - 13, 9):
-                    pygame.draw.circle(surface, (27, 113, 104), (xx, yy), 2)
+            pygame.draw.rect(surface, (8, 25, 43), card_rect, border_radius=9)
+            pygame.draw.rect(surface, (55, 225, 169), card_rect, 3, border_radius=9)
+            inner = card_rect.inflate(-9, -9)
+            pygame.draw.rect(surface, (14, 61, 70), inner, border_radius=6)
+            pygame.draw.rect(surface, (243, 186, 67), inner, 2, border_radius=6)
+            for yy in range(inner.top + 5, inner.bottom - 3, 8):
+                for xx in range(inner.left + 5, inner.right - 3, 8):
+                    phase = ((xx + yy) // 8) % 2
+                    color = (50, 208, 161) if phase else (25, 119, 116)
+                    pygame.draw.polygon(surface, color, [(xx, yy - 2), (xx + 3, yy + 1), (xx, yy + 4), (xx - 3, yy + 1)])
+            pygame.draw.circle(surface, (6, 34, 42), inner.center, max(7, int(w * .16)))
+            pygame.draw.circle(surface, (244, 188, 70), inner.center, max(5, int(w * .12)), 2)
+            pygame.draw.line(surface, (255, 245, 194), (card_rect.left + 9, card_rect.top + 3), (card_rect.right - 9, card_rect.top + 3), 1)
             return surface
         color = (204, 48, 62) if card.suit in RED_SUITS else (18, 27, 31)
+        edge = (244, 83, 103) if card.suit in RED_SUITS else (46, 201, 181)
+        pygame.draw.rect(surface, (249, 244, 221), card_rect, border_radius=9)
+        pygame.draw.rect(surface, edge, card_rect, 3, border_radius=9)
+        inner = card_rect.inflate(-7, -7)
+        pygame.draw.rect(surface, (255, 252, 235), inner, border_radius=6)
+        for yy in range(inner.top + 2, inner.bottom, 6):
+            pygame.draw.line(surface, (239, 229, 203), (inner.left + 1, yy), (inner.right - 1, yy), 1)
         rank_text = "10" if card.rank == "T" else card.rank
         rank_font = self.fonts["xs"] if w < 55 else self.fonts["md"]
-        surface.blit(rank_font.render(rank_text, True, color), (7, 4))
+        rank_shadow = rank_font.render(rank_text, True, (224, 183, 138))
+        surface.blit(rank_shadow, (8, 6))
+        surface.blit(rank_font.render(rank_text, True, color), (6, 4))
         suit_font = pygame.font.SysFont("Segoe UI Symbol", max(24, int(w * .54)))
         suit = suit_font.render(SUIT_SYMBOL[card.suit], True, color)
-        surface.blit(suit, suit.get_rect(center=(w // 2 - 2, h // 2 + 10)))
-        pygame.draw.line(surface, (255, 255, 255, 150), (8, 2), (w - 15, 2), 1)
+        watermark = suit_font.render(SUIT_SYMBOL[card.suit], True, edge)
+        watermark.set_alpha(38)
+        surface.blit(watermark, watermark.get_rect(center=(card_rect.centerx + 6, card_rect.centery + 9)))
+        surface.blit(suit, suit.get_rect(center=(card_rect.centerx, card_rect.centery + 11)))
+        pygame.draw.circle(surface, edge, (card_rect.right - 8, card_rect.bottom - 8), 3)
+        pygame.draw.line(surface, (255, 255, 255, 210), (card_rect.left + 9, card_rect.top + 2), (card_rect.right - 9, card_rect.top + 2), 2)
         return surface
 
     def _blit_card(self, card, center, size, back, rotation, alpha=255, width_scale=1.0):
@@ -683,18 +857,19 @@ class PokerApp:
             pygame.draw.circle(self.canvas, (245, 241, 219), (int(particle["x"]), int(particle["y"])), 3, 1)
 
     def _community_center(self, idx):
-        return 520 - 2 * 68 + idx * 68, 276
+        return 520 - 2 * 74 + idx * 74, 276
 
     def _hole_card_size(self, idx):
-        return (62, 88) if idx == 0 else (47, 67)
+        return (72, 102) if idx == 0 else (50, 72)
 
     def _hole_card_center(self, idx, slot):
         x, y = self.seats[idx]
         if idx == 0:
-            return x - 28 + slot * 56, y - 61
+            float_y = math.sin(time.monotonic() * 2.2 + slot) * 2
+            return x - 32 + slot * 64, y - 66 + float_y
         if idx in (2, 3):
-            return x - 22 + slot * 43, y - 48
-        return x - 22 + slot * 43, y - 48
+            return x - 23 + slot * 46, y - 50
+        return x - 23 + slot * 46, y - 50
 
     def _hole_rotation(self, idx, slot):
         return 7 if slot == 0 else -7
