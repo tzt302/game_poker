@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from poker.engine import Card, HoldemGame, evaluate_seven
+from neon_holdem.engine import Card, HoldemGame, evaluate_seven
 
 
 def cards(text: str):
