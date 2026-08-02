@@ -7,6 +7,7 @@ const NAMES = ["你", "沈砚", "阿岚", "老周", "白露"];
 const STYLES: Array<"human" | Style> = ["human", "tight", "aggressive", "balanced", "loose"];
 const SEATS = ["south", "west", "northwest", "northeast", "east"];
 const PHASES = ["翻牌前", "翻牌", "转牌", "河牌"];
+type LogEntry = { id: number; street: string; player: string; action: string; amount?: number; result?: boolean };
 
 function initialPlayers(): Player[] {
   return NAMES.map((name, id) => ({ id, name, stack: 1000, cards: [], folded: false, allIn: false, bet: 0, lastAction: "等待", style: STYLES[id] }));
@@ -36,7 +37,9 @@ export default function PokerGame() {
   const [message, setMessage] = useState("入座已备，请开始第一局");
   const [thinking, setThinking] = useState<number | null>(null);
   const [raise, setRaise] = useState(80);
-  const [log, setLog] = useState<string[]>(["牌桌已就绪 · 盲注 10 / 20"]);
+  const [log, setLog] = useState<LogEntry[]>([{ id: 0, street: "准备", player: "牌桌", action: "盲注 10 / 20" }]);
+  const [winnerIds, setWinnerIds] = useState<number[]>([]);
+  const [resultReason, setResultReason] = useState("");
   const deckRef = useRef<Card[]>([]);
   const playersRef = useRef(players);
   const potRef = useRef(pot);
@@ -51,7 +54,9 @@ export default function PokerGame() {
   const minRaise = Math.min(human.stack, Math.max(toCall + 40, currentBet + 20));
   const shownRaise = Math.min(maxRaise, Math.max(minRaise, raise));
 
-  const addLog = useCallback((line: string) => setLog((old) => [line, ...old].slice(0, 7)), []);
+  const addLog = useCallback((entry: Omit<LogEntry, "id">) => {
+    setLog((old) => [{ ...entry, id: Date.now() + old.length }, ...old].slice(0, 14));
+  }, []);
 
   const pay = useCallback((id: number, amount: number, action: string) => {
     let paid = 0;
@@ -69,7 +74,9 @@ export default function PokerGame() {
     const winnerIds = new Set(winners.map((w) => w.id));
     setPlayers((old) => old.map((p) => winnerIds.has(p.id) ? { ...p, stack: p.stack + share, lastAction: "赢得底池" } : p));
     setMessage(`${winners.map((w) => w.name).join("、")}赢得 ${potRef.current} 筹码 · ${reason}`);
-    addLog(`◆ ${winners.map((w) => w.name).join("、")}赢下底池 ${potRef.current}`);
+    setWinnerIds([...winnerIds]);
+    setResultReason(reason);
+    addLog({ street: "结算", player: winners.map((w) => w.name).join("、"), action: "赢得底池", amount: potRef.current, result: true });
     setReveal(true); setHandOver(true); setBusy(false); setThinking(null);
   }, [addLog]);
 
@@ -109,14 +116,14 @@ export default function PokerGame() {
       const d = aiDecision(p.style as Style, p.cards, board, call, potRef.current, p.stack);
       if (d.type === "fold") {
         setPlayers((old) => old.map((x) => x.id === id ? { ...x, folded: true, lastAction: "弃牌" } : x));
-        addLog(`${p.name} · 弃牌`);
+        addLog({ street: PHASES[phase], player: p.name, action: "弃牌" });
       } else if (d.type === "raise") {
         const paid = pay(id, d.amount, `加注至 ${p.bet + d.amount}`);
         const newBet = p.bet + paid; setCurrentBet(newBet); betRef.current = newBet;
-        addLog(`${p.name} · 加注至 ${newBet}`);
+        addLog({ street: PHASES[phase], player: p.name, action: "加注至", amount: newBet });
       } else {
         pay(id, d.amount, d.type === "call" ? `跟注 ${d.amount}` : "过牌");
-        addLog(`${p.name} · ${d.type === "call" ? `跟注 ${d.amount}` : "过牌"}`);
+        addLog({ street: PHASES[phase], player: p.name, action: d.type === "call" ? "跟注" : "过牌", amount: d.type === "call" ? d.amount : undefined });
       }
       await new Promise((r) => setTimeout(r, 280));
       if (playersRef.current.filter((x) => !x.folded).length === 1) break;
@@ -124,7 +131,7 @@ export default function PokerGame() {
     setThinking(null);
     const live = playersRef.current.filter((p) => !p.folded);
     if (live.length === 1) award(live, "其余玩家均已弃牌"); else nextStreet();
-  }, [addLog, award, board, nextStreet, pay]);
+  }, [addLog, award, board, nextStreet, pay, phase]);
 
   function startHand() {
     const deck = freshDeck(); deckRef.current = deck;
@@ -132,23 +139,28 @@ export default function PokerGame() {
     const reset = players.map((p) => ({ ...p, stack: p.stack || 1000, cards: [deck.shift()!, deck.shift()!], folded: false, allIn: false, bet: 0, lastAction: "已入局" }));
     setPlayers(reset); playersRef.current = reset;
     setBoard([]); setPot(0); potRef.current = 0; setCurrentBet(0); betRef.current = 0; setPhase(0);
-    setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null);
+    setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null); setWinnerIds([]); setResultReason("");
     const sb = (nextDealer + 1) % 5, bb = (nextDealer + 2) % 5;
-    setTimeout(() => { pay(sb, 10, "小盲 10"); pay(bb, 20, "大盲 20"); setCurrentBet(20); betRef.current = 20; setMessage("翻牌前 · 轮到你行动"); addLog(`第 ${handNo + 1} 局开始 · 随机洗牌完成`); }, 350);
+    setLog([
+      { id: Date.now(), street: "翻牌前", player: reset[bb].name, action: "大盲", amount: 20 },
+      { id: Date.now() + 1, street: "翻牌前", player: reset[sb].name, action: "小盲", amount: 10 },
+      { id: Date.now() + 2, street: `第 ${handNo + 1} 局`, player: "牌桌", action: "洗牌并发牌" },
+    ]);
+    setTimeout(() => { pay(sb, 10, "小盲 10"); pay(bb, 20, "大盲 20"); setCurrentBet(20); betRef.current = 20; setMessage("翻牌前 · 轮到你行动"); }, 350);
   }
 
   function humanAction(type: "fold" | "call" | "raise") {
     if (busy || handOver) return;
     if (type === "fold") {
       setPlayers((old) => old.map((p) => p.id === 0 ? { ...p, folded: true, lastAction: "弃牌" } : p));
-      addLog("你 · 弃牌"); setTimeout(runAi, 300); return;
+      addLog({ street: PHASES[phase], player: "你", action: "弃牌" }); setTimeout(runAi, 300); return;
     }
     if (type === "call") {
-      pay(0, toCall, toCall ? `跟注 ${toCall}` : "过牌"); addLog(`你 · ${toCall ? `跟注 ${toCall}` : "过牌"}`);
+      pay(0, toCall, toCall ? `跟注 ${toCall}` : "过牌"); addLog({ street: PHASES[phase], player: "你", action: toCall ? "跟注" : "过牌", amount: toCall || undefined });
     } else {
       const amount = Math.min(human.stack, shownRaise);
       pay(0, amount, `加注至 ${human.bet + amount}`); const newBet = human.bet + amount;
-      setCurrentBet(newBet); betRef.current = newBet; addLog(`你 · 加注至 ${newBet}`);
+      setCurrentBet(newBet); betRef.current = newBet; addLog({ street: PHASES[phase], player: "你", action: "加注至", amount: newBet });
     }
     setTimeout(runAi, 350);
   }
@@ -159,6 +171,12 @@ export default function PokerGame() {
     const rankValue: Record<string, number> = { "2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"10":10,J:11,Q:12,K:13,A:14 };
     return board.length ? Math.min(96, 18 + s[0] * 10 + (s[1] ?? 5)) : 20 + Math.round((rankValue[human.cards[0].rank] + rankValue[human.cards[1].rank]) / 3);
   }, [human.cards, board]);
+
+  const showdownHands = useMemo(() => {
+    const hands = new Map<number, string>();
+    if (reveal && board.length === 5) players.filter((p) => !p.folded).forEach((p) => hands.set(p.id, handName(handScore([...p.cards, ...board]))));
+    return hands;
+  }, [board, players, reveal]);
 
   return (
     <main className="game-shell">
@@ -179,13 +197,19 @@ export default function PokerGame() {
               {[0,1,2,3,4].map((i) => board[i] ? <CardView key={`${board[i].rank}${board[i].suit}`} card={board[i]} delay={i * 120} small /> : <div className="card-slot" key={i} />)}
             </div>
             <div className="street-label">{handOver ? "本局结算" : PHASES[phase]}</div>
+            {handOver && winnerIds.length > 0 && <div className="showdown-result">
+              <small>本局胜者</small>
+              <strong>{players.filter((p) => winnerIds.includes(p.id)).map((p) => p.name).join("、")}</strong>
+              <span>{resultReason} · 赢得 {pot} 筹码</span>
+            </div>}
 
             {players.map((p, index) => (
-              <div className={`seat seat-${SEATS[index]} ${p.folded ? "folded" : ""} ${thinking === p.id ? "thinking" : ""}`} key={p.id}>
+              <div className={`seat seat-${SEATS[index]} ${p.folded ? "folded" : ""} ${thinking === p.id ? "thinking" : ""} ${winnerIds.includes(p.id) ? "winner" : ""} ${reveal && !p.folded && !winnerIds.includes(p.id) ? "showdown-loser" : ""}`} key={p.id}>
                 {p.id !== 0 && <div className="hole-cards">
                   {p.cards.map((c, i) => <CardView key={i} card={c} hidden={!reveal && !handOver} delay={100 + i * 90} small />)}
                 </div>}
                 {p.id === 0 && <div className="hole-cards human-cards">{p.cards.map((c, i) => <CardView key={i} card={c} delay={100 + i * 90} />)}</div>}
+                {showdownHands.has(p.id) && <div className={`hand-badge ${winnerIds.includes(p.id) ? "best" : ""}`}>{winnerIds.includes(p.id) ? "胜出 · " : ""}{showdownHands.get(p.id)}</div>}
                 <div className="player-plaque">
                   <div className="avatar">{p.name.slice(0,1)}{dealer === p.id && <em>D</em>}</div>
                   <div className="player-copy"><div><strong>{p.name}</strong>{p.style !== "human" && <span style={{ color: PERSONALITIES[p.style].color }}>{PERSONALITIES[p.style].label}</span>}</div><b>{p.stack.toLocaleString()} <small>筹码</small></b></div>
@@ -203,7 +227,8 @@ export default function PokerGame() {
           <div className="personality-list">
             {players.slice(1).map((p) => <div className={`personality ${thinking === p.id ? "active" : ""}`} key={p.id}><span className="mini-avatar">{p.name[0]}</span><div><strong>{p.name}<em style={{ color: PERSONALITIES[p.style as Style].color }}>{PERSONALITIES[p.style as Style].label}</em></strong><small>{PERSONALITIES[p.style as Style].motto}</small></div><b>{p.lastAction}</b></div>)}
           </div>
-          <div className="action-log"><h3>行动记事</h3>{log.map((line, i) => <p key={`${line}${i}`}><span>{i ? "·" : "◆"}</span>{line}</p>)}</div>
+          {reveal && showdownHands.size > 0 && <div className="showdown-panel"><h3>开牌结果</h3>{players.filter((p) => showdownHands.has(p.id)).sort((a, b) => Number(winnerIds.includes(b.id)) - Number(winnerIds.includes(a.id))).map((p) => <div className={winnerIds.includes(p.id) ? "best" : ""} key={p.id}><strong>{p.name}</strong><span>{p.cards.map((c) => `${c.rank}${c.suit}`).join(" ")}</span><b>{showdownHands.get(p.id)}</b></div>)}</div>}
+          <div className="action-log"><div className="log-heading"><h3>下注历史</h3><span>最新在上</span></div><div className="log-columns"><span>阶段</span><span>玩家</span><span>动作</span><span>筹码</span></div><div className="log-rows">{log.map((entry) => <div className={`log-row ${entry.result ? "result" : ""}`} key={entry.id}><span>{entry.street}</span><strong>{entry.player}</strong><b>{entry.action}</b><em>{entry.amount === undefined ? "—" : entry.amount}</em></div>)}</div></div>
         </aside>
       </section>
 
