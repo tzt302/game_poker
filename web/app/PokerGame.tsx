@@ -23,6 +23,7 @@ function CardView({ card, hidden = false, delay = 0, small = false }: { card?: C
 }
 
 export default function PokerGame() {
+  const [mounted, setMounted] = useState(false);
   const [players, setPlayers] = useState<Player[]>(initialPlayers);
   const [board, setBoard] = useState<Card[]>([]);
   const [pot, setPot] = useState(0);
@@ -49,6 +50,7 @@ export default function PokerGame() {
   useEffect(() => { playersRef.current = players; }, [players]);
   useEffect(() => { potRef.current = pot; }, [pot]);
   useEffect(() => { betRef.current = currentBet; }, [currentBet]);
+  useEffect(() => { setMounted(true); }, []);
 
   const human = players[0];
   const toCall = Math.max(0, currentBet - human.bet);
@@ -130,7 +132,14 @@ export default function PokerGame() {
       setThinking(id); setMessage(`${p.name}正在研判牌局…`);
       await new Promise((r) => setTimeout(r, 750 + Math.random() * 650));
       const call = Math.max(0, betRef.current - p.bet);
-      const d = aiDecision(p.cards, board, call, potRef.current, p.stack, aiRaiseCountRef.current === 0);
+      const liveOpponents = playersRef.current.filter((candidate) => candidate.id !== id && !candidate.folded).length;
+      const position = ((id - dealer + 5) % 5) / 4;
+      const d = aiDecision(p.cards, board, call, potRef.current, p.stack, {
+        canRaise: aiRaiseCountRef.current === 0,
+        opponents: liveOpponents,
+        position,
+        bigBlind: 20,
+      });
       if (d.type === "fold") {
         foldPlayer(id);
         addLog({ street: PHASES[phase], player: p.name, action: "弃牌" });
@@ -161,7 +170,7 @@ export default function PokerGame() {
     const unsettledAi = playersRef.current.slice(1).some((p) => !p.folded && !p.allIn && (!actedRef.current.has(p.id) || p.bet < betRef.current));
     if (unsettledAi) { setTimeout(() => runAiRef.current(), 250); return; }
     nextStreet();
-  }, [addLog, award, board, foldPlayer, nextStreet, pay, phase]);
+  }, [addLog, award, board, dealer, foldPlayer, nextStreet, pay, phase]);
   useEffect(() => { runAiRef.current = () => { void runAi(); }; }, [runAi]);
 
   function startHand() {
@@ -209,6 +218,10 @@ export default function PokerGame() {
     if (reveal && board.length === 5) players.filter((p) => !p.folded).forEach((p) => hands.set(p.id, handName(handScore([...p.cards, ...board]))));
     return hands;
   }, [board, players, reveal]);
+
+  if (!mounted) {
+    return <main className="poker-loading" aria-label="正在布置牌桌"><span>♠</span><strong>正在布置牌桌</strong></main>;
+  }
 
   return (
     <main className="game-shell">

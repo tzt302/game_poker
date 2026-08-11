@@ -88,20 +88,87 @@ export function preflopStrength(cards: Card[]) {
 
 export function postflopStrength(cards: Card[], board: Card[]) {
   const score = handScore([...cards, ...board]);
-  return Math.min(1, score[0] / 8 + (score[1] ?? 0) / 120 + Math.random() * 0.08);
+  return Math.min(1, score[0] / 8 + (score[1] ?? 0) / 120);
 }
 
-export function aiDecision(cards: Card[], board: Card[], toCall: number, pot: number, stack: number, canRaise = true) {
-  const base = board.length ? postflopStrength(cards, board) : preflopStrength(cards);
-  const noise = (Math.random() - 0.5) * 0.1;
-  const strength = base + noise;
-  const pressure = toCall / Math.max(1, pot + toCall);
-  const foldThreshold = 0.2 + pressure * 0.48;
+function compareScores(a: number[], b: number[]) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) - (b[i] ?? 0);
+  }
+  return 0;
+}
+
+function shuffledCopy(cards: Card[], random: () => number) {
+  const copy = [...cards];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+export function estimateEquity(cards: Card[], board: Card[], opponents = 1, trials = 90, random = Math.random) {
+  if (cards.length < 2) return 0;
+  const known = new Set([...cards, ...board].map((card) => `${card.rank}${card.suit}`));
+  const unseen = SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))).filter((card) => !known.has(`${card.rank}${card.suit}`));
+  const opponentCount = Math.max(1, Math.min(4, opponents));
+  let equity = 0;
+  for (let trial = 0; trial < trials; trial++) {
+    const deck = shuffledCopy(unseen, random);
+    const fullBoard = [...board];
+    while (fullBoard.length < 5) fullBoard.push(deck.pop()!);
+    const ourScore = handScore([...cards, ...fullBoard]);
+    let tied = 1;
+    let beaten = false;
+    for (let opponent = 0; opponent < opponentCount; opponent++) {
+      const theirScore = handScore([deck.pop()!, deck.pop()!, ...fullBoard]);
+      const result = compareScores(ourScore, theirScore);
+      if (result < 0) { beaten = true; break; }
+      if (result === 0) tied += 1;
+    }
+    if (!beaten) equity += 1 / tied;
+  }
+  return equity / trials;
+}
+
+export type AiDecisionOptions = {
+  canRaise?: boolean;
+  opponents?: number;
+  position?: number;
+  bigBlind?: number;
+  random?: () => number;
+};
+
+export function aiDecision(cards: Card[], board: Card[], toCall: number, pot: number, stack: number, options: AiDecisionOptions | boolean = {}) {
+  const config = typeof options === "boolean" ? { canRaise: options } : options;
+  const canRaise = config.canRaise ?? true;
+  const opponents = config.opponents ?? 1;
+  const position = Math.max(0, Math.min(1, config.position ?? 0.5));
+  const bigBlind = config.bigBlind ?? 20;
+  const random = config.random ?? Math.random;
+  const potOdds = toCall / Math.max(1, pot + toCall);
+  const stackPressure = toCall / Math.max(1, stack + toCall);
+  const preflop = board.length === 0;
+  const base = preflop ? preflopStrength(cards) : estimateEquity(cards, board, opponents, 90, random);
+  const positionBonus = (position - 0.5) * 0.08;
+  const decisionNoise = (random() - 0.5) * 0.16;
+  const strength = base + positionBonus + decisionNoise;
+
+  // Preflop uses a range threshold; postflop compares estimated showdown equity
+  // against the actual price offered by the pot. Small raises therefore keep a
+  // realistic field, while large bets can still make weak hands fold.
+  const preflopRaiseSize = toCall / Math.max(1, bigBlind);
+  const foldThreshold = preflop
+    ? 0.39 + Math.min(0.2, Math.max(0, preflopRaiseSize - 1) * 0.05) + stackPressure * 0.1
+    : potOdds + 0.025 + stackPressure * 0.08;
   if (toCall > 0 && strength < foldThreshold) return { type: "fold" as const, amount: 0 };
-  const strongEnoughToRaise = strength > (board.length ? 0.72 : 0.76);
-  if (canRaise && strongEnoughToRaise && Math.random() < 0.38 && stack > toCall + 20) {
-    const amount = Math.min(stack, toCall + Math.max(40, Math.round((pot * 0.35) / 10) * 10));
-    return { type: "raise" as const, amount };
+
+  const premium = preflop ? base > 0.82 : base > Math.max(0.62, potOdds + 0.3);
+  const valueRaise = premium && random() < (base > 0.9 ? 0.58 : 0.32);
+  const bluffRaise = !premium && toCall <= Math.max(bigBlind, pot * 0.2) && random() < 0.055;
+  if (canRaise && (valueRaise || bluffRaise) && stack > toCall + bigBlind) {
+    const raiseSize = Math.max(bigBlind * 2, Math.round((pot * (0.5 + random() * 0.25)) / 10) * 10);
+    return { type: "raise" as const, amount: Math.min(stack, toCall + raiseSize) };
   }
   return { type: toCall ? "call" as const : "check" as const, amount: Math.min(stack, toCall) };
 }
