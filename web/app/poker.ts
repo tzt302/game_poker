@@ -136,8 +136,35 @@ export type AiDecisionOptions = {
   opponents?: number;
   position?: number;
   bigBlind?: number;
+  betTo?: number;
+  callers?: number;
+  playersBehind?: number;
+  isBigBlind?: boolean;
+  isSmallBlind?: boolean;
+  streetRaises?: number;
   random?: () => number;
 };
+
+function preflopTraits(cards: Card[]) {
+  const first = VALUE[cards[0].rank];
+  const second = VALUE[cards[1].rank];
+  const high = Math.max(first, second);
+  const low = Math.min(first, second);
+  const gap = Math.abs(first - second);
+  return {
+    pair: first === second,
+    suited: cards[0].suit === cards[1].suit,
+    connected: gap <= 1,
+    oneGap: gap === 2,
+    broadway: high >= 11 && low >= 10,
+    high,
+    low,
+  };
+}
+
+function logistic(value: number) {
+  return 1 / (1 + Math.exp(-value));
+}
 
 export function aiDecision(cards: Card[], board: Card[], toCall: number, pot: number, stack: number, options: AiDecisionOptions | boolean = {}) {
   const config = typeof options === "boolean" ? { canRaise: options } : options;
@@ -145,29 +172,55 @@ export function aiDecision(cards: Card[], board: Card[], toCall: number, pot: nu
   const opponents = config.opponents ?? 1;
   const position = Math.max(0, Math.min(1, config.position ?? 0.5));
   const bigBlind = config.bigBlind ?? 20;
+  const callers = Math.max(0, config.callers ?? 0);
+  const playersBehind = Math.max(0, config.playersBehind ?? opponents - 1);
+  const streetRaises = Math.max(0, config.streetRaises ?? 0);
   const random = config.random ?? Math.random;
   const potOdds = toCall / Math.max(1, pot + toCall);
   const stackPressure = toCall / Math.max(1, stack + toCall);
   const preflop = board.length === 0;
   const base = preflop ? preflopStrength(cards) : estimateEquity(cards, board, opponents, 90, random);
-  const positionBonus = (position - 0.5) * 0.08;
-  const decisionNoise = (random() - 0.5) * 0.16;
-  const strength = base + positionBonus + decisionNoise;
+  const positionBonus = (position - 0.5) * 0.07;
 
-  // Preflop uses a range threshold; postflop compares estimated showdown equity
-  // against the actual price offered by the pot. Small raises therefore keep a
-  // realistic field, while large bets can still make weak hands fold.
-  const preflopRaiseSize = toCall / Math.max(1, bigBlind);
-  const foldThreshold = preflop
-    ? 0.39 + Math.min(0.2, Math.max(0, preflopRaiseSize - 1) * 0.05) + stackPressure * 0.1
-    : potOdds + 0.025 + stackPressure * 0.08;
-  if (toCall > 0 && strength < foldThreshold) return { type: "fold" as const, amount: 0 };
+  if (toCall > 0 && preflop) {
+    const traits = preflopTraits(cards);
+    const betTo = Math.max(toCall, config.betTo ?? toCall);
+    const raiseSizeBb = betTo / Math.max(1, bigBlind);
+    let continueThreshold = 0.51;
+    continueThreshold += Math.min(0.2, Math.max(0, raiseSizeBb - 2.5) * 0.045);
+    continueThreshold += Math.max(0, potOdds - 0.3) * 0.32;
+    continueThreshold += stackPressure * 0.08;
+    continueThreshold -= positionBonus;
 
-  const premium = preflop ? base > 0.82 : base > Math.max(0.62, potOdds + 0.3);
-  const valueRaise = premium && random() < (base > 0.9 ? 0.58 : 0.32);
-  const bluffRaise = !premium && toCall <= Math.max(bigBlind, pot * 0.2) && random() < 0.055;
+    // Human-looking range adjustments: blinds defend their investment, pocket
+    // pairs and suited connectors chase implied odds, and callers improve the
+    // price for the players still in the hand.
+    if (traits.pair) continueThreshold -= traits.high <= 8 ? 0.075 : 0.045;
+    if (traits.suited && (traits.connected || traits.oneGap)) continueThreshold -= 0.065;
+    else if (traits.suited) continueThreshold -= 0.025;
+    if (traits.broadway) continueThreshold -= 0.035;
+    if (config.isBigBlind) continueThreshold -= 0.075;
+    else if (config.isSmallBlind) continueThreshold -= 0.025;
+    continueThreshold -= Math.min(0.09, callers * 0.035);
+    if (playersBehind === 0) continueThreshold -= 0.025;
+    continueThreshold += Math.max(0, streetRaises - 1) * 0.055;
+
+    const tableRead = (random() - 0.5) * 0.1;
+    const continueChance = logistic((base + tableRead - continueThreshold) * 10.5);
+    if (random() > continueChance) return { type: "fold" as const, amount: 0 };
+  } else if (toCall > 0) {
+    const postflopThreshold = potOdds + 0.025 + stackPressure * 0.08 - positionBonus;
+    const continueChance = logistic((base - postflopThreshold) * 13 + (random() - 0.5) * 0.8);
+    if (random() > continueChance) return { type: "fold" as const, amount: 0 };
+  }
+
+  const premium = preflop ? base > 0.84 : base > Math.max(0.64, potOdds + 0.3);
+  const strongButTrappy = premium && random() < 0.2;
+  const valueRaiseChance = preflop ? 0.27 + Math.max(0, base - 0.84) * 1.5 : 0.3 + Math.max(0, base - 0.64);
+  const valueRaise = premium && !strongButTrappy && random() < Math.min(0.7, valueRaiseChance);
+  const bluffRaise = !premium && position > 0.58 && callers === 0 && streetRaises <= 1 && toCall <= Math.max(bigBlind * 3, pot * 0.35) && random() < 0.045;
   if (canRaise && (valueRaise || bluffRaise) && stack > toCall + bigBlind) {
-    const raiseSize = Math.max(bigBlind * 2, Math.round((pot * (0.5 + random() * 0.25)) / 10) * 10);
+    const raiseSize = Math.max(bigBlind * 2.5, Math.round((pot * (0.52 + random() * 0.3)) / 10) * 10);
     return { type: "raise" as const, amount: Math.min(stack, toCall + raiseSize) };
   }
   return { type: toCall ? "call" as const : "check" as const, amount: Math.min(stack, toCall) };

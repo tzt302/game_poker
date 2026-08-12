@@ -13,6 +13,50 @@ function seededRandom(seed = 1) {
   };
 }
 
+function simulateFourWayResponse(betTo, hands = 1800, seed = 302) {
+  const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+  const suits = ["♠", "♥", "♦", "♣"];
+  const sourceDeck = suits.flatMap((suit) => ranks.map((rank) => ({ rank, suit })));
+  const random = seededRandom(seed);
+  let allFold = 0;
+  let totalContinuers = 0;
+  for (let hand = 0; hand < hands; hand++) {
+    const deck = [...sourceDeck];
+    for (let index = deck.length - 1; index > 0; index--) {
+      const swap = Math.floor(random() * (index + 1));
+      [deck[index], deck[swap]] = [deck[swap], deck[index]];
+    }
+    let pot = betTo + 30;
+    let callers = 0;
+    let continuers = 0;
+    for (let player = 0; player < 4; player++) {
+      const invested = player === 2 ? 10 : player === 3 ? 20 : 0;
+      const toCall = betTo - invested;
+      const decision = aiDecision([deck.pop(), deck.pop()], [], toCall, pot, 1000 - invested, {
+        canRaise: false,
+        opponents: 4 - callers,
+        position: player / 3,
+        bigBlind: 20,
+        betTo,
+        callers,
+        playersBehind: 3 - player,
+        isSmallBlind: player === 2,
+        isBigBlind: player === 3,
+        streetRaises: 1,
+        random,
+      });
+      if (decision.type !== "fold") {
+        continuers += 1;
+        callers += 1;
+        pot += decision.amount;
+      }
+    }
+    totalContinuers += continuers;
+    allFold += Number(continuers === 0);
+  }
+  return { allFoldRate: allFold / hands, averageContinuers: totalContinuers / hands };
+}
+
 test("a normal preflop raise keeps a realistic portion of hands in play", () => {
   const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const suits = ["♠", "♥", "♦", "♣"];
@@ -40,4 +84,17 @@ test("postflop equity recognizes a strong made hand", () => {
 test("large pressure still folds a genuinely weak hand", () => {
   const decision = aiDecision(cards("7♣ 2♦"), [], 240, 120, 760, { canRaise: false, opponents: 4, position: 0, random: seededRandom(7) });
   assert.equal(decision.type, "fold");
+});
+
+test("a standard four-big-blind raise usually gets a human-like defence", () => {
+  const result = simulateFourWayResponse(80);
+  assert.ok(result.allFoldRate > 0.015 && result.allFoldRate < 0.14, `all-fold rate was ${result.allFoldRate}`);
+  assert.ok(result.averageContinuers > 0.85 && result.averageContinuers < 2.3, `average continuers was ${result.averageContinuers}`);
+});
+
+test("an oversized raise earns substantially more folds than a normal raise", () => {
+  const normal = simulateFourWayResponse(80, 1600, 91);
+  const oversized = simulateFourWayResponse(240, 1600, 91);
+  assert.ok(oversized.allFoldRate > normal.allFoldRate + 0.12, `normal=${normal.allFoldRate}, oversized=${oversized.allFoldRate}`);
+  assert.ok(oversized.averageContinuers < normal.averageContinuers - 0.35, `normal=${normal.averageContinuers}, oversized=${oversized.averageContinuers}`);
 });

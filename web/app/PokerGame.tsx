@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { aiDecision, Card, freshDeck, handName, handScore, Player } from "./poker";
+import { claimDailyBonus, estDayKey, loadPokerEconomy, savePokerEconomy } from "./bankroll";
 
 const NAMES = ["你", "沈砚", "阿岚", "老周", "白露"];
 const SEATS = ["south", "west", "northwest", "northeast", "east"];
@@ -40,6 +41,8 @@ export default function PokerGame() {
   const [log, setLog] = useState<LogEntry[]>([{ id: 0, street: "准备", player: "牌桌", action: "盲注 10 / 20" }]);
   const [winnerIds, setWinnerIds] = useState<number[]>([]);
   const [resultReason, setResultReason] = useState("");
+  const [claimedDay, setClaimedDay] = useState("");
+  const [clock, setClock] = useState(() => new Date());
   const deckRef = useRef<Card[]>([]);
   const playersRef = useRef(players);
   const potRef = useRef(pot);
@@ -50,13 +53,40 @@ export default function PokerGame() {
   useEffect(() => { playersRef.current = players; }, [players]);
   useEffect(() => { potRef.current = pot; }, [pot]);
   useEffect(() => { betRef.current = currentBet; }, [currentBet]);
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    const economy = loadPokerEconomy();
+    setClaimedDay(economy.claimedDay);
+    setPlayers((old) => {
+      const next = old.map((player) => player.id === 0 ? { ...player, stack: economy.chips } : player);
+      playersRef.current = next;
+      return next;
+    });
+    setMounted(true);
+    const timer = window.setInterval(() => setClock(new Date()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (!mounted) return;
+    savePokerEconomy({ chips: players[0]?.stack ?? 0, claimedDay });
+  }, [mounted, players, claimedDay]);
 
   const human = players[0];
   const toCall = Math.max(0, currentBet - human.bet);
   const maxRaise = Math.max(Math.min(human.stack, toCall + 40), human.stack);
   const minRaise = Math.min(human.stack, Math.max(toCall + 40, currentBet + 20));
   const shownRaise = Math.min(maxRaise, Math.max(minRaise, raise));
+  const todayEst = estDayKey(clock);
+  const canClaimDaily = claimedDay !== todayEst;
+
+  function claimBonus() {
+    const result = claimDailyBonus({ chips: playersRef.current[0]?.stack ?? 0, claimedDay }, todayEst);
+    if (!result.claimed) return;
+    const next = playersRef.current.map((player) => player.id === 0 ? { ...player, stack: result.economy.chips, lastAction: "签到 +1,000" } : player);
+    playersRef.current = next;
+    setPlayers(next);
+    setClaimedDay(result.economy.claimedDay);
+    setMessage("每日签到成功 · 获得 1,000 筹码");
+  }
 
   const addLog = useCallback((entry: Omit<LogEntry, "id">) => {
     setLog((old) => [{ ...entry, id: Date.now() + old.length }, ...old].slice(0, 14));
@@ -134,11 +164,21 @@ export default function PokerGame() {
       const call = Math.max(0, betRef.current - p.bet);
       const liveOpponents = playersRef.current.filter((candidate) => candidate.id !== id && !candidate.folded).length;
       const position = ((id - dealer + 5) % 5) / 4;
+      const bigBlindId = (dealer + 2) % 5;
+      const smallBlindId = (dealer + 1) % 5;
+      const callers = playersRef.current.filter((candidate) => candidate.id !== id && !candidate.folded && actedRef.current.has(candidate.id) && candidate.bet >= betRef.current).length;
+      const playersBehind = playersRef.current.slice(id + 1).filter((candidate) => !candidate.folded && !candidate.allIn).length;
       const d = aiDecision(p.cards, board, call, potRef.current, p.stack, {
         canRaise: aiRaiseCountRef.current === 0,
         opponents: liveOpponents,
         position,
         bigBlind: 20,
+        betTo: betRef.current,
+        callers,
+        playersBehind,
+        isBigBlind: id === bigBlindId,
+        isSmallBlind: id === smallBlindId,
+        streetRaises: aiRaiseCountRef.current + Number(betRef.current > (phase === 0 ? 20 : 0)),
       });
       if (d.type === "fold") {
         foldPlayer(id);
@@ -174,9 +214,13 @@ export default function PokerGame() {
   useEffect(() => { runAiRef.current = () => { void runAi(); }; }, [runAi]);
 
   function startHand() {
+    if (playersRef.current[0]?.stack <= 0) {
+      setMessage(canClaimDaily ? "筹码已经输光，请先领取每日签到" : "筹码已经输光，下一次美东时间 00:00 可签到");
+      return;
+    }
     const deck = freshDeck(); deckRef.current = deck;
     const nextDealer = (dealer + 1) % 5; setDealer(nextDealer);
-    const reset = players.map((p) => ({ ...p, stack: p.stack || 1000, cards: [deck.shift()!, deck.shift()!], folded: false, allIn: false, bet: 0, lastAction: "已入局" }));
+    const reset = players.map((p) => ({ ...p, stack: p.id === 0 ? p.stack : (p.stack || 1000), cards: [deck.shift()!, deck.shift()!], folded: false, allIn: false, bet: 0, lastAction: "已入局" }));
     setPlayers(reset); playersRef.current = reset;
     setBoard([]); setPot(0); potRef.current = 0; setCurrentBet(0); betRef.current = 0; setPhase(0);
     setHandNo((v) => v + 1); setReveal(false); setHandOver(false); setBusy(false); setThinking(null); setWinnerIds([]); setResultReason(""); actedRef.current = new Set(); aiRaiseCountRef.current = 0;
@@ -229,6 +273,7 @@ export default function PokerGame() {
         <a className="lobby-link" href="/" aria-label="返回游戏大厅">← <span>游戏大厅</span></a>
         <div className="brand"><div><h1>德州扑克</h1></div></div>
         <div className="table-meta"><span>第 {Math.max(1, handNo)} 局</span><i /><span>盲注 10 / 20</span><i /><span>随机牌组</span></div>
+        <button className={`daily-bonus ${canClaimDaily ? "available" : "claimed"}`} onClick={claimBonus} disabled={!canClaimDaily} aria-label={canClaimDaily ? "领取每日签到一千筹码" : "今日签到已领取"}><span>{canClaimDaily ? "每日签到" : "今日已签"}</span><b>{canClaimDaily ? "+1,000" : "✓"}</b><small>美东 00:00 刷新</small></button>
         <button className="sound-button" aria-label="声音">♪</button>
       </header>
 
@@ -279,7 +324,7 @@ export default function PokerGame() {
       </section>
 
       <footer className="action-dock">
-        {handOver ? <button className="deal-button" onClick={startHand}><span>开始新一局</span><small>重新洗牌并随机发牌</small></button> : human.folded ? <div className="spectating-notice"><strong>你已弃牌</strong><span>AI 正在完成本局</span></div> : <>
+        {handOver ? human.stack <= 0 ? <div className="bankrupt-notice"><div><strong>筹码已经输光</strong><span>{canClaimDaily ? "领取今日签到即可继续" : "请在美东时间 00:00 后回来签到"}</span></div><button onClick={claimBonus} disabled={!canClaimDaily}>{canClaimDaily ? "签到领取 1,000" : "今日已领取"}</button></div> : <button className="deal-button" onClick={startHand}><span>开始新一局</span><small>当前筹码 {human.stack.toLocaleString()} · 自动保存</small></button> : human.folded ? <div className="spectating-notice"><strong>你已弃牌</strong><span>AI 正在完成本局</span></div> : <>
           <button className="action ghost" disabled={busy} onClick={() => humanAction("fold")}><span>弃牌</span><small>Fold</small></button>
           <button className="action pale" disabled={busy} onClick={() => humanAction("call")}><span>{toCall ? `跟注 ${toCall}` : "过牌"}</span><small>{toCall ? "Call" : "Check"}</small></button>
           <div className="raise-control"><div className="raise-head"><span>加注筹码</span><strong>{shownRaise}</strong></div><input aria-label="加注筹码" type="range" min={minRaise} max={Math.max(minRaise, maxRaise)} step="10" value={shownRaise} disabled={busy || human.stack <= toCall} onChange={(e) => setRaise(Number(e.target.value))} /><div className="raise-ticks"><span>{minRaise}</span><span>半池</span><span>全下 {human.stack}</span></div></div>
