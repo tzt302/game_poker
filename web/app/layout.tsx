@@ -23,5 +23,5 @@ export const metadata: Metadata = {
 export const viewport: Viewport = { themeColor: "#20cec0" };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="zh-CN"><body>{children}</body></html>;
+  return <html lang="zh-CN" suppressHydrationWarning><body suppressHydrationWarning>{children}<script defer src="/games/shared/game-i18n.js" data-game="poker" /></body></html>;
 }
