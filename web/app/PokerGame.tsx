@@ -43,6 +43,7 @@ export default function PokerGame() {
   const [resultReason, setResultReason] = useState("");
   const [claimedDay, setClaimedDay] = useState("");
   const [clock, setClock] = useState(() => new Date());
+  const [mobileInfoOpen, setMobileInfoOpen] = useState(false);
   const deckRef = useRef<Card[]>([]);
   const playersRef = useRef(players);
   const potRef = useRef(pot);
@@ -54,16 +55,18 @@ export default function PokerGame() {
   useEffect(() => { potRef.current = pot; }, [pot]);
   useEffect(() => { betRef.current = currentBet; }, [currentBet]);
   useEffect(() => {
-    const economy = loadPokerEconomy();
-    setClaimedDay(economy.claimedDay);
-    setPlayers((old) => {
-      const next = old.map((player) => player.id === 0 ? { ...player, stack: economy.chips } : player);
-      playersRef.current = next;
-      return next;
-    });
-    setMounted(true);
+    const hydrate = window.setTimeout(() => {
+      const economy = loadPokerEconomy();
+      setClaimedDay(economy.claimedDay);
+      setPlayers((old) => {
+        const next = old.map((player) => player.id === 0 ? { ...player, stack: economy.chips } : player);
+        playersRef.current = next;
+        return next;
+      });
+      setMounted(true);
+    }, 0);
     const timer = window.setInterval(() => setClock(new Date()), 30000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearTimeout(hydrate); window.clearInterval(timer); };
   }, []);
   useEffect(() => {
     if (!mounted) return;
@@ -77,6 +80,7 @@ export default function PokerGame() {
   const shownRaise = Math.min(maxRaise, Math.max(minRaise, raise));
   const todayEst = estDayKey(clock);
   const canClaimDaily = claimedDay !== todayEst;
+  const setRaisePreset = (value: number) => setRaise(Math.min(maxRaise, Math.max(minRaise, Math.round(value / 10) * 10)));
 
   function claimBonus() {
     const result = claimDailyBonus({ chips: playersRef.current[0]?.stack ?? 0, claimedDay }, todayEst);
@@ -270,6 +274,7 @@ export default function PokerGame() {
   return (
     <main className="game-shell">
       <header className="topbar">
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a className="lobby-link" href="/" aria-label="返回游戏大厅">← <span>游戏大厅</span></a>
         <div className="brand"><div><h1>德州扑克</h1></div></div>
         <div className="table-meta"><span>第 {Math.max(1, handNo)} 局</span><i /><span>盲注 10 / 20</span><i /><span>随机牌组</span></div>
@@ -305,7 +310,7 @@ export default function PokerGame() {
                   <div className="avatar">{p.name.slice(0,1)}{dealer === p.id && <em>D</em>}</div>
                   <div className="player-copy"><div><strong>{p.name}</strong></div><b>{p.stack.toLocaleString()} <small>筹码</small></b></div>
                 </div>
-                <div className={`action-bubble ${thinking === p.id ? "active" : ""}`}>{thinking === p.id ? <><span className="dots">•••</span> 思考中</> : p.lastAction}</div>
+                <div className={`action-bubble ${thinking === p.id ? "active" : ""}`}><span className="action-content" key={`${p.id}-${thinking === p.id ? "thinking" : p.lastAction}`}>{thinking === p.id ? <><span className="dots">•••</span> 思考中</> : p.lastAction}</span></div>
               </div>
             ))}
           </div>
@@ -323,11 +328,19 @@ export default function PokerGame() {
         </aside>
       </section>
 
+      <button className="mobile-info-toggle" type="button" aria-expanded={mobileInfoOpen} onClick={() => setMobileInfoOpen((open) => !open)}><span>牌局信息</span><b>{winRate}%</b></button>
+      <aside className={`mobile-info-drawer ${mobileInfoOpen ? "open" : ""}`} aria-hidden={!mobileInfoOpen}>
+        <header><strong>牌局信息</strong><button type="button" onClick={() => setMobileInfoOpen(false)} aria-label="关闭牌局信息">×</button></header>
+        <div className="mobile-strength"><span>当前牌力参考</span><strong>{winRate}%</strong><div className="meter"><i style={{ width: `${winRate}%` }} /></div></div>
+        <div className="mobile-opponents">{players.slice(1).map((p) => <div key={p.id}><strong>{p.name}</strong><span>{p.folded ? "已弃牌" : p.lastAction}</span><b>{p.stack.toLocaleString()}</b></div>)}</div>
+        <div className="mobile-log">{log.slice(0, 5).map((entry) => <p key={entry.id}><span>{entry.street}</span><strong>{entry.player}</strong><b>{entry.action}{entry.amount === undefined ? "" : ` ${entry.amount}`}</b></p>)}</div>
+      </aside>
+
       <footer className="action-dock">
         {handOver ? human.stack <= 0 ? <div className="bankrupt-notice"><div><strong>筹码已经输光</strong><span>{canClaimDaily ? "领取今日签到即可继续" : "请在美东时间 00:00 后回来签到"}</span></div><button onClick={claimBonus} disabled={!canClaimDaily}>{canClaimDaily ? "签到领取 1,000" : "今日已领取"}</button></div> : <button className="deal-button" onClick={startHand}><span>开始新一局</span><small>当前筹码 {human.stack.toLocaleString()} · 自动保存</small></button> : human.folded ? <div className="spectating-notice"><strong>你已弃牌</strong><span>AI 正在完成本局</span></div> : <>
           <button className="action ghost" disabled={busy} onClick={() => humanAction("fold")}><span>弃牌</span><small>Fold</small></button>
           <button className="action pale" disabled={busy} onClick={() => humanAction("call")}><span>{toCall ? `跟注 ${toCall}` : "过牌"}</span><small>{toCall ? "Call" : "Check"}</small></button>
-          <div className="raise-control"><div className="raise-head"><span>加注筹码</span><strong>{shownRaise}</strong></div><input aria-label="加注筹码" type="range" min={minRaise} max={Math.max(minRaise, maxRaise)} step="10" value={shownRaise} disabled={busy || human.stack <= toCall} onChange={(e) => setRaise(Number(e.target.value))} /><div className="raise-ticks"><span>{minRaise}</span><span>半池</span><span>全下 {human.stack}</span></div></div>
+          <div className="raise-control"><div className="raise-head"><span>加注筹码</span><strong>{shownRaise}</strong></div><div className="raise-row"><button type="button" disabled={busy || human.stack <= toCall} onClick={() => setRaisePreset(shownRaise - 10)} aria-label="加注减少十">−</button><input aria-label="加注筹码" type="range" min={minRaise} max={Math.max(minRaise, maxRaise)} step="10" value={shownRaise} disabled={busy || human.stack <= toCall} onChange={(e) => setRaise(Number(e.target.value))} /><button type="button" disabled={busy || human.stack <= toCall} onClick={() => setRaisePreset(shownRaise + 10)} aria-label="加注增加十">＋</button></div><div className="raise-presets"><button type="button" onClick={() => setRaisePreset(toCall + pot * .5)}>半池</button><button type="button" onClick={() => setRaisePreset(toCall + pot)}>一池</button><button type="button" onClick={() => setRaisePreset(human.stack)}>全下</button></div></div>
           <button className="action gold" disabled={busy || human.stack <= toCall} onClick={() => humanAction("raise")}><span>加注</span><small>Raise</small></button>
         </>}
       </footer>
